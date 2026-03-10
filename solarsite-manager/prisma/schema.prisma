@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  password  String
+  role      String   @default("user")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  uploadHistory UploadHistory[]
+  alerts        Alert[]
+  refreshTokens RefreshToken[]
+  resetTokens   PasswordResetToken[]
+}
+
+model Site {
+  id                       String           @id @default(cuid())
+  siteName                 String
+  location                 String?
+  capacity                 Float
+  monitoringSystem         String
+  monitoringUrl            String
+  startDate                DateTime?
+  expectedAnnualGeneration Float?
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+
+  dailyGenerations DailyGeneration[]
+  alerts           Alert[]
+  uploadHistory    UploadHistory[]
+}
+
+model DailyGeneration {
+  id         String   @id @default(cuid())
+  siteId     String
+  date       DateTime
+  generation Float
+  status     String?
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@unique([siteId, date])
+}
+
+model UploadHistory {
+  id          String   @id @default(cuid())
+  userId      String
+  siteId      String?
+  fileName    String
+  filePath    String
+  fileSize    Int
+  dataFormat  String
+  recordCount Int
+  successCount Int
+  errorCount  Int
+  uploadedAt  DateTime @default(now())
+
+  user User  @relation(fields: [userId], references: [id])
+  site Site? @relation(fields: [siteId], references: [id])
+}
+
+model Alert {
+  id         String   @id @default(cuid())
+  siteId     String
+  alertType  String
+  severity   String
+  message    String
+  detectedAt DateTime @default(now())
+  resolvedAt DateTime?
+  resolvedBy String?
+
+  site  Site  @relation(fields: [siteId], references: [id])
+  user  User? @relation(fields: [resolvedBy], references: [id])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model LoginAttempt {
+  id         String   @id @default(cuid())
+  email      String
+  ipAddress  String?
+  success    Boolean
+  attemptedAt DateTime @default(now())
+}
+

@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-950 text-slate-50 antialiased;
+}
+
+a {
+  @apply text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline;
+}
+
+main {
+  @apply min-h-screen;
+}
+
