@@ -29,7 +29,7 @@ Tailwind CSS + shadcn/ui
 バックエンド
 Next.js API Routes
 データベース
-PostgreSQL 16
+SQLite（開発環境：ローカル `file:./dev.db`。本番環境のRDBMSは別途検討）
 ORM
 Prisma
 認証

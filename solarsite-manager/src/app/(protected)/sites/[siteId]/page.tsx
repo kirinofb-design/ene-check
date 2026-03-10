@@ -55,8 +55,8 @@ export default async function SiteDetailPage({
 
       <section>
         <h2 className="text-sm font-medium text-slate-300 mb-2">直近の発電量データ</h2>
-        <div className="rounded-lg border border-slate-800 overflow-hidden">
-          <table className="min-w-full text-xs">
+        <div className="rounded-lg border border-slate-800 overflow-x-auto">
+          <table className="min-w-[520px] w-full text-xs">
             <thead className="bg-slate-900/80">
               <tr className="text-left text-slate-300">
                 <th className="px-3 py-2">日付</th>

@@ -75,11 +75,14 @@ Stage 0: プロジェクトセットアップ
  # Core dependenciesnpm install prisma @prisma/clientnpm install next-auth@betanpm install bcryptjsnpm install xlsxnpm install rechartsnpm install zod# UI componentsnpx shadcn-ui@latest initnpx shadcn-ui@latest add buttonnpx shadcn-ui@latest add inputnpx shadcn-ui@latest add cardnpx shadcn-ui@latest add tablenpx shadcn-ui@latest add dialognpx shadcn-ui@latest add toast# Dev dependenciesnpm install -D @types/bcryptjsnpm install -D @types/node
 
 
-[ ] 🔴 PostgreSQL環境構築
-ローカル: Docker Composeでセットアップ
-または: Supabase / Vercel Postgres
-[ ] 🔴 環境変数ファイル作成
- # .env.localDATABASE_URL="postgresql://..."NEXTAUTH_SECRET="generate-32-char-secret"NEXTAUTH_URL="http://localhost:3000"UPLOAD_DIR="./uploads"
+[x] 🔴 SQLite環境構築（開発）
+ローカル: Prisma の SQLite（`file:./dev.db`）を使用
+[x] 🔴 環境変数ファイル作成
+ # .env.local
+DATABASE_URL="file:./dev.db"
+NEXTAUTH_SECRET="generate-32-char-secret"
+NEXTAUTH_URL="http://localhost:3000"
+UPLOAD_DIR="./uploads"
 
 
 [ ] 🟡 Git初期化・リポジトリセットアップ
@@ -92,9 +95,9 @@ Stage 0: プロジェクトセットアップ
 /node_modules
 /.next
 完了確認:
-[ ] npm run dev で開発サーバーが起動する
-[ ] PostgreSQLに接続できる
-[ ] 環境変数が読み込まれる
+[x] npm run dev で開発サーバーが起動する
+[x] SQLite（dev.db）に接続できる
+[x] 環境変数が読み込まれる
 
 0-2. ディレクトリ構造作成
 参照: Spec.md セクション6.1
@@ -161,7 +164,7 @@ Stage 1: データベース設計・構築
 1-1. Prismaスキーマ定義
 参照: Spec.md セクション5（エンティティ）, セクション4.3（認証ルール）
 タスク一覧
-[ ] 🔴 prisma/schema.prisma 作成
+[x] 🔴 prisma/schema.prisma 作成
 User モデル
 Site モデル
 DailyGeneration モデル
@@ -172,80 +175,80 @@ PasswordResetToken モデル
 LoginAttempt モデル
 Prismaスキーマ実装チェックリスト
 User モデル
-[ ] id: String @id @default(cuid())
-[ ] email: String @unique
-[ ] name: String?
-[ ] password: String（bcrypt ハッシュ）
-[ ] role: String @default("user")
-[ ] createdAt: DateTime @default(now())
-[ ] updatedAt: DateTime @updatedAt
-[ ] リレーション: UploadHistory[], Alert[]
+[x] id: String @id @default(cuid())
+[x] email: String @unique
+[x] name: String?
+[x] password: String（bcrypt ハッシュ）
+[x] role: String @default("user")
+[x] createdAt: DateTime @default(now())
+[x] updatedAt: DateTime @updatedAt
+[x] リレーション: UploadHistory[], Alert[]
 Site モデル
-[ ] id: String @id @default(cuid())
-[ ] siteName: String
-[ ] location: String?
-[ ] capacity: Float（kW）
-[ ] monitoringSystem: String（例: "eco-megane"）
-[ ] monitoringUrl: String
-[ ] startDate: DateTime?
-[ ] expectedAnnualGeneration: Float?（kWh）
-[ ] createdAt: DateTime @default(now())
-[ ] updatedAt: DateTime @updatedAt
-[ ] リレーション: DailyGeneration[], Alert[], UploadHistory[]
+[x] id: String @id @default(cuid())
+[x] siteName: String
+[x] location: String?
+[x] capacity: Float（kW）
+[x] monitoringSystem: String（例: "eco-megane"）
+[x] monitoringUrl: String
+[x] startDate: DateTime?
+[x] expectedAnnualGeneration: Float?（kWh）
+[x] createdAt: DateTime @default(now())
+[x] updatedAt: DateTime @updatedAt
+[x] リレーション: DailyGeneration[], Alert[], UploadHistory[]
 DailyGeneration モデル
-[ ] id: String @id @default(cuid())
-[ ] siteId: String
-[ ] date: DateTime
-[ ] generation: Float（kWh）
-[ ] status: String?（"正常", "停止", "異常"）
-[ ] notes: String?
-[ ] createdAt: DateTime @default(now())
-[ ] updatedAt: DateTime @updatedAt
-[ ] @@unique([siteId, date])（同一サイト・同一日の重複防止）
-[ ] リレーション: Site
+[x] id: String @id @default(cuid())
+[x] siteId: String
+[x] date: DateTime
+[x] generation: Float（kWh）
+[x] status: String?（"正常", "停止", "異常"）
+[x] notes: String?
+[x] createdAt: DateTime @default(now())
+[x] updatedAt: DateTime @updatedAt
+[x] @@unique([siteId, date])（同一サイト・同一日の重複防止）
+[x] リレーション: Site
 UploadHistory モデル
-[ ] id: String @id @default(cuid())
-[ ] userId: String
-[ ] siteId: String?
-[ ] fileName: String
-[ ] filePath: String
-[ ] fileSize: Int（bytes）
-[ ] dataFormat: String（"xlsx", "xls", "csv"）
-[ ] recordCount: Int（取り込んだレコード数）
-[ ] successCount: Int（成功数）
-[ ] errorCount: Int（エラー数）
-[ ] uploadedAt: DateTime @default(now())
-[ ] リレーション: User, Site?
+[x] id: String @id @default(cuid())
+[x] userId: String
+[x] siteId: String?
+[x] fileName: String
+[x] filePath: String
+[x] fileSize: Int（bytes）
+[x] dataFormat: String（"xlsx", "xls", "csv"）
+[x] recordCount: Int（取り込んだレコード数）
+[x] successCount: Int（成功数）
+[x] errorCount: Int（エラー数）
+[x] uploadedAt: DateTime @default(now())
+[x] リレーション: User, Site?
 Alert モデル
-[ ] id: String @id @default(cuid())
-[ ] siteId: String
-[ ] alertType: String（"POWER_STOP", "POWER_LOW", "DATA_MISSING"）
-[ ] severity: String（"INFO", "WARNING", "CRITICAL"）
-[ ] message: String
-[ ] detectedAt: DateTime @default(now())
-[ ] resolvedAt: DateTime?
-[ ] resolvedBy: String?（userId）
-[ ] リレーション: Site, User?
+[x] id: String @id @default(cuid())
+[x] siteId: String
+[x] alertType: String（"POWER_STOP", "POWER_LOW", "DATA_MISSING"）
+[x] severity: String（"INFO", "WARNING", "CRITICAL"）
+[x] message: String
+[x] detectedAt: DateTime @default(now())
+[x] resolvedAt: DateTime?
+[x] resolvedBy: String?（userId）
+[x] リレーション: Site, User?
 RefreshToken モデル
-[ ] id: String @id @default(cuid())
-[ ] token: String @unique
-[ ] userId: String
-[ ] expiresAt: DateTime
-[ ] createdAt: DateTime @default(now())
-[ ] リレーション: User
+[x] id: String @id @default(cuid())
+[x] token: String @unique
+[x] userId: String
+[x] expiresAt: DateTime
+[x] createdAt: DateTime @default(now())
+[x] リレーション: User
 PasswordResetToken モデル
-[ ] id: String @id @default(cuid())
-[ ] token: String @unique
-[ ] userId: String
-[ ] expiresAt: DateTime
-[ ] createdAt: DateTime @default(now())
-[ ] リレーション: User
+[x] id: String @id @default(cuid())
+[x] token: String @unique
+[x] userId: String
+[x] expiresAt: DateTime
+[x] createdAt: DateTime @default(now())
+[x] リレーション: User
 LoginAttempt モデル
-[ ] id: String @id @default(cuid())
-[ ] email: String
-[ ] ipAddress: String?
-[ ] success: Boolean
-[ ] attemptedAt: DateTime @default(now())
+[x] id: String @id @default(cuid())
+[x] email: String
+[x] ipAddress: String?
+[x] success: Boolean
+[x] attemptedAt: DateTime @default(now())
 タスク実行
 [ ] 🔴 スキーマファイル作成
 [ ] 🔴 マイグレーション実行
@@ -804,26 +807,26 @@ UI実装チェックリスト
 Stage 7: Phase 1 完了確認
 Phase 1 完了チェックリスト
 機能要件（Spec.md セクション3より P0機能）
-[ ] ✅ F-1: ユーザー認証
+[x] ✅ F-1: ユーザー認証
 [ ] 新規登録ができる
 [ ] ログイン・ログアウトができる
-[ ] ✅ F-2: サイトマスタ管理
+[x] ✅ F-2: サイトマスタ管理
 [ ] 6サイトの基本情報を登録できる
 [ ] サイト情報を編集できる
-[ ] ✅ F-3: Excelファイルアップロード
+[x] ✅ F-3: Excelファイルアップロード
 [ ] ファイルをアップロードできる
 [ ] データが取り込まれる
-[ ] ✅ F-4: マルチフォーマット自動認識
+[x] ✅ F-4: マルチフォーマット自動認識
 [ ] 異なるフォーマットのファイルをパースできる
-[ ] ✅ F-5: 発電量ダッシュボード
+[x] ✅ F-5: 発電量ダッシュボード
 [ ] 6サイト全体の発電量が表示される
-[ ] ✅ F-6: 日別発電量表示
+[x] ✅ F-6: 日別発電量表示
 [ ] 日単位の発電量グラフが表示される
-[ ] ✅ F-7: 月別・年別集計
+[x] ✅ F-7: 月別・年別集計
 [ ] 月次・年次のサマリーが表示される
-[ ] ✅ F-8: リアルタイム状況表示
+[x] ✅ F-8: リアルタイム状況表示
 [ ] 最新の発電状況が表示される
-[ ] ✅ F-9: 異常・アラート管理
+[x] ✅ F-9: 異常・アラート管理
 [ ] アラートが検知される
 [ ] アラート一覧が表示される
 非機能要件（Spec.md セクション9より）
@@ -831,14 +834,14 @@ Phase 1 完了チェックリスト
 [ ] API応答時間: p95で500ms以内
 [ ] ファイルアップロード: 10MB/ファイルを30秒以内
 [ ] HTTPS通信（本番環境）
-[ ] パスワードbcryptハッシュ化
+[x] パスワードbcryptハッシュ化
 受け入れテスト
 [ ] エンドユーザー（再エネ促進課メンバー）による動作確認
 [ ] 6つの監視システムのサンプルデータを実際にアップロード
 [ ] ダッシュボードで正常に表示確認
 [ ] アラートが適切に動作確認
 ドキュメント
-[ ] README.md（セットアップ手順）
+[x] README.md（セットアップ手順）
 [ ] API仕様書（自動生成または手書き）
 [ ] 運用マニュアル（ユーザー向け）
 
@@ -846,20 +849,20 @@ Phase 2: 機能拡充（参考）
 Phase 1完了後、以下の機能を実装:
 Phase 2 実装機能
 [ ] F-10: サイト別詳細表示
-[ ] F-11: サイト間比較分析
-[ ] F-12: データエクスポート
-[ ] F-13: データ履歴管理
+[x] F-11: サイト間比較分析
+[x] F-12: データエクスポート
+[x] F-13: データ履歴管理
 詳細は Phase 1 完了後に別途計画します。
 
 Phase 3: 運用改善（参考）
 Phase 2完了後、以下の機能を実装:
 Phase 3 実装機能
-[ ] F-14: 監視システムリンク管理
-[ ] F-15: カスタムフォーマット定義
-[ ] データ自動バックアップ
-[ ] パフォーマンス最適化
-[ ] エラーログ・監視機能
-[ ] モバイル対応改善
+[x] F-14: 監視システムリンク管理
+[x] F-15: カスタムフォーマット定義
+[x] データ自動バックアップ
+[x] パフォーマンス最適化
+[x] エラーログ・監視機能
+[x] モバイル対応改善
 詳細は Phase 2 完了後に別途計画します。
 
 トラブルシューティング

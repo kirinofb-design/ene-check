@@ -1,4 +1,5 @@
 import { read, utils } from "xlsx";
+import { prisma } from "@/lib/prisma";
 
 export interface ParsedData {
   date: Date;
@@ -19,10 +20,11 @@ export interface ParseResult {
   };
 }
 
-// MVP では単純なヘッダー付き CSV / Excel を想定し、今後 Spec 10.3 の全パターンに拡張する。
+// MVP では単純なヘッダー付き CSV / Excel を想定し、Phase 3 では
+// CustomFormat で定義されたカラム候補を優先的に利用する。
 export async function parseFile(
   file: File,
-  _siteId?: string
+  siteId?: string
 ): Promise<ParseResult> {
   const buffer = Buffer.from(await file.arrayBuffer());
   const workbook = read(buffer, { type: "buffer" });
@@ -34,8 +36,52 @@ export async function parseFile(
   const data: ParsedData[] = [];
   const errors: string[] = [];
 
-  const dateKeys = ["日付", "date", "年月日"];
-  const genKeys = ["発電量", "generation", "energy", "発電電力量"];
+  // デフォルトキー
+  let dateKeys = ["日付", "date", "年月日"];
+  let genKeys = ["発電量", "generation", "energy", "発電電力量"];
+
+  // サイトまたは監視システムに紐づくカスタムフォーマットがあれば反映
+  if (siteId) {
+    const site = await prisma.site.findUnique({
+      where: { id: siteId },
+      include: {
+        customFormats: {
+          where: { isActive: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+    });
+
+    const format =
+      site?.customFormats[0] ??
+      (site
+        ? await prisma.customFormat.findFirst({
+            where: {
+              monitoringSystem: site.monitoringSystem,
+              isActive: true,
+            },
+            orderBy: { createdAt: "desc" },
+          })
+        : null);
+
+    if (format) {
+      try {
+        const cfg = JSON.parse(format.config) as {
+          dateKeys?: string[];
+          generationKeys?: string[];
+        };
+        if (Array.isArray(cfg.dateKeys) && cfg.dateKeys.length > 0) {
+          dateKeys = cfg.dateKeys;
+        }
+        if (Array.isArray(cfg.generationKeys) && cfg.generationKeys.length > 0) {
+          genKeys = cfg.generationKeys;
+        }
+      } catch {
+        // config が壊れていてもデフォルトキーでパースを継続
+      }
+    }
+  }
 
   for (const row of rows) {
     const dateValue = pickFirst(row, dateKeys);

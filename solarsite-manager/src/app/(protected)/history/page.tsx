@@ -26,8 +26,8 @@ export default async function UploadHistoryPage() {
         アップロードしたファイルの取込履歴を確認できます。
       </p>
 
-      <div className="rounded-lg border border-slate-800 overflow-hidden">
-        <table className="min-w-full text-xs">
+      <div className="rounded-lg border border-slate-800 overflow-x-auto">
+        <table className="min-w-[720px] w-full text-xs">
           <thead className="bg-slate-900/80">
             <tr className="text-left text-slate-300">
               <th className="px-3 py-2">日時</th>

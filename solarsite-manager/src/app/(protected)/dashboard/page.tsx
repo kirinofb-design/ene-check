@@ -13,29 +13,62 @@ export default async function DashboardPage() {
   const start = new Date();
   start.setDate(start.getDate() - 30);
 
-  const dailyRecords = await prisma.dailyGeneration.findMany({
-    where: {
-      date: { gte: start, lte: end },
-    },
-    orderBy: { date: "asc" },
-    include: { site: { select: { siteName: true } } },
-  });
+  const [dailyRecords, latestRecords] = await Promise.all([
+    prisma.dailyGeneration.findMany({
+      where: {
+        date: { gte: start, lte: end },
+      },
+      orderBy: { date: "asc" },
+      include: { site: { select: { siteName: true } } },
+    }),
+    prisma.dailyGeneration.groupBy({
+      by: ["siteId"],
+      _max: { date: true },
+      where: { siteId: { in: sites.map((s) => s.id) } },
+    }),
+  ]);
 
+  const latestDatesBySite = new Map<string, Date>();
+  for (const row of latestRecords) {
+    if (row._max.date) latestDatesBySite.set(row.siteId, row._max.date);
+  }
   const latestBySite: Record<
     string,
     { siteName: string; date: Date; generation: number; status: string | null }
   > = {};
-  for (const site of sites) {
-    const latest = await prisma.dailyGeneration.findFirst({
-      where: { siteId: site.id },
-      orderBy: { date: "desc" },
+  if (latestDatesBySite.size > 0) {
+    const fullLatest = await prisma.dailyGeneration.findMany({
+      where: {
+        OR: Array.from(latestDatesBySite.entries()).map(([siteId, date]) => ({
+          siteId,
+          date,
+        })),
+      },
     });
-    latestBySite[site.id] = {
-      siteName: site.siteName,
-      date: latest?.date ?? new Date(0),
-      generation: latest?.generation ?? 0,
-      status: latest?.status ?? null,
-    };
+    const index = new Map<string, (typeof fullLatest)[number]>();
+    for (const r of fullLatest) {
+      index.set(`${r.siteId}:${r.date.toISOString()}`, r);
+    }
+    for (const site of sites) {
+      const date = latestDatesBySite.get(site.id);
+      const key = date ? `${site.id}:${date.toISOString()}` : null;
+      const rec = key ? index.get(key) : undefined;
+      latestBySite[site.id] = {
+        siteName: site.siteName,
+        date: rec?.date ?? new Date(0),
+        generation: rec?.generation ?? 0,
+        status: rec?.status ?? null,
+      };
+    }
+  } else {
+    for (const site of sites) {
+      latestBySite[site.id] = {
+        siteName: site.siteName,
+        date: new Date(0),
+        generation: 0,
+        status: null,
+      };
+    }
   }
 
   const dateSet = new Set<string>();

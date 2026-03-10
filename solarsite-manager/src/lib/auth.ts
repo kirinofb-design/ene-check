@@ -20,8 +20,8 @@ export async function getServerSession(): Promise<Session | null> {
 }
 
 // 未認証ならエラーを投げる（API 用）
-export async function requireAuth(): Promise<Session> {
-  const session = await auth();
+export async function requireAuth(request?: Request): Promise<Session> {
+  const session = request ? await auth(request) : await auth();
   if (!session || !session.user) {
     throw new Error("UNAUTHORIZED");
   }

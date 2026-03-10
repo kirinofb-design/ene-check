@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { MONITORING_SYSTEM_PRESETS, resolvePreset } from "@/lib/monitoringSystems";
 
 interface Site {
   id: string;
@@ -27,6 +28,14 @@ export function SiteEditForm({ site }: Props) {
   const [monitoringUrl, setMonitoringUrl] = useState(site.monitoringUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function handleSelectMonitoringSystem(next: string) {
+    setMonitoringSystem(next);
+    const preset = resolvePreset(next);
+    if (preset?.defaultUrl) {
+      setMonitoringUrl(preset.defaultUrl);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -110,11 +119,17 @@ export function SiteEditForm({ site }: Props) {
 
       <div className="space-y-1">
         <label className="text-xs font-medium text-slate-200">監視システム *</label>
-        <input
+        <select
           className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
           value={monitoringSystem}
-          onChange={(e) => setMonitoringSystem(e.target.value)}
-        />
+          onChange={(e) => handleSelectMonitoringSystem(e.target.value)}
+        >
+          {MONITORING_SYSTEM_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="space-y-1">
@@ -125,6 +140,9 @@ export function SiteEditForm({ site }: Props) {
           value={monitoringUrl}
           onChange={(e) => setMonitoringUrl(e.target.value)}
         />
+        <p className="text-[10px] text-slate-500">
+          プリセットを選ぶとURLが自動入力されます（必要なら上書き可）。
+        </p>
       </div>
 
       {error && (

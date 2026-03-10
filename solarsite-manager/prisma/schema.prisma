@@ -37,6 +37,7 @@ model Site {
   dailyGenerations DailyGeneration[]
   alerts           Alert[]
   uploadHistory    UploadHistory[]
+  customFormats    CustomFormat[]
 }
 
 model DailyGeneration {
@@ -111,5 +112,23 @@ model LoginAttempt {
   ipAddress  String?
   success    Boolean
   attemptedAt DateTime @default(now())
+}
+
+model CustomFormat {
+  id               String   @id @default(cuid())
+  name             String
+  monitoringSystem String
+  siteId           String?
+  isActive         Boolean  @default(true)
+  // パース用のカスタム設定（例: dateKeys, generationKeys など）
+  // SQLite では Json 型が使えないため JSON文字列として保持
+  config           String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  site Site? @relation(fields: [siteId], references: [id])
+
+  @@index([monitoringSystem, isActive])
+  @@index([siteId, isActive])
 }
 

@@ -2,16 +2,27 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { MONITORING_SYSTEM_PRESETS, resolvePreset } from "@/lib/monitoringSystems";
 
 export default function NewSitePage() {
   const router = useRouter();
   const [siteName, setSiteName] = useState("");
   const [location, setLocation] = useState("");
   const [capacity, setCapacity] = useState<number | "">("");
-  const [monitoringSystem, setMonitoringSystem] = useState("");
+  const [monitoringSystem, setMonitoringSystem] = useState<string>(
+    MONITORING_SYSTEM_PRESETS[0]?.id ?? "other"
+  );
   const [monitoringUrl, setMonitoringUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function handleSelectMonitoringSystem(next: string) {
+    setMonitoringSystem(next);
+    const preset = resolvePreset(next);
+    if (preset?.defaultUrl) {
+      setMonitoringUrl(preset.defaultUrl);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -99,11 +110,17 @@ export default function NewSitePage() {
           <label className="text-xs font-medium text-slate-200">
             監視システム *
           </label>
-          <input
+          <select
             className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
             value={monitoringSystem}
-            onChange={(e) => setMonitoringSystem(e.target.value)}
-          />
+            onChange={(e) => handleSelectMonitoringSystem(e.target.value)}
+          >
+            {MONITORING_SYSTEM_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="space-y-1">
@@ -116,6 +133,9 @@ export default function NewSitePage() {
             value={monitoringUrl}
             onChange={(e) => setMonitoringUrl(e.target.value)}
           />
+          <p className="text-[10px] text-slate-500">
+            プリセットを選ぶとURLが自動入力されます（必要なら上書き可）。
+          </p>
         </div>
 
         {error && (

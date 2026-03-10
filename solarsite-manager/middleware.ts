@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 
+function createRequestId() {
+  // セキュアなIDでなくても相関IDとして十分（ログ/問い合わせ用途）
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const protectedRoutes = [
   "/dashboard",
   "/upload",
@@ -18,18 +23,25 @@ export default auth((req) => {
   const isProtected = protectedRoutes.some((path) =>
     nextUrl.pathname.startsWith(path)
   );
+  const requestId = req.headers.get("x-request-id") ?? createRequestId();
 
   if (isLoggedIn && isAuthPage) {
-    return NextResponse.redirect(new URL("/dashboard", nextUrl.origin));
+    const res = NextResponse.redirect(new URL("/dashboard", nextUrl.origin));
+    res.headers.set("x-request-id", requestId);
+    return res;
   }
 
   if (!isLoggedIn && isProtected) {
     const loginUrl = new URL("/auth/login", nextUrl.origin);
     loginUrl.searchParams.set("from", nextUrl.pathname);
-    return NextResponse.redirect(loginUrl);
+    const res = NextResponse.redirect(loginUrl);
+    res.headers.set("x-request-id", requestId);
+    return res;
   }
 
-  return NextResponse.next();
+  const res = NextResponse.next();
+  res.headers.set("x-request-id", requestId);
+  return res;
 });
 
 export const config = {
