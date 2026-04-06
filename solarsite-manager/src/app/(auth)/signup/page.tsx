@@ -58,7 +58,7 @@ export default function SignupPage() {
 
       setSuccess("登録が完了しました。ログイン画面に移動します。");
       setTimeout(() => {
-        router.push("/auth/login");
+        router.push("/login");
       }, 1200);
     } catch {
       setError("ネットワークエラーが発生しました。時間をおいて再度お試しください。");
@@ -153,7 +153,7 @@ export default function SignupPage() {
         </button>
 
         <div className="flex items-center justify-end text-xs text-slate-400 mt-2">
-          <Link href="/auth/login">すでにアカウントをお持ちの方はこちら</Link>
+          <Link href="/login">すでにアカウントをお持ちの方はこちら</Link>
         </div>
       </form>
     </div>

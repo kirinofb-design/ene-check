@@ -1,5 +1,5 @@
 import { read, utils } from "xlsx";
-import { prisma } from "@/lib/prisma";
+import { prisma } from "../lib/prisma";
 
 export interface ParsedData {
   date: Date;
@@ -27,11 +27,27 @@ export async function parseFile(
   siteId?: string
 ): Promise<ParseResult> {
   const buffer = Buffer.from(await file.arrayBuffer());
-  const workbook = read(buffer, { type: "buffer" });
-  const sheetName = workbook.SheetNames[0];
-  const sheet = workbook.Sheets[sheetName];
+  let rows: any[] = [];
 
-  const rows: any[] = utils.sheet_to_json(sheet, { defval: null });
+  const fileName = typeof file.name === "string" ? file.name : "";
+  const lower = fileName.toLowerCase();
+
+  // CSV は xlsx.read() 経由だと文字化けしやすいので、常に UTF-8 で自前パースする
+  if (lower.endsWith(".csv")) {
+    const csvText = buffer.toString("utf8");
+    rows = parseCsvToObjects(csvText);
+  } else {
+    try {
+      const workbook = read(buffer, { type: "buffer" });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      rows = utils.sheet_to_json(sheet, { defval: null });
+    } catch {
+      // xlsx が読めない場合は CSV として扱う（簡易）
+      const csvText = buffer.toString("utf8");
+      rows = parseCsvToObjects(csvText);
+    }
+  }
 
   const data: ParsedData[] = [];
   const errors: string[] = [];
@@ -84,8 +100,12 @@ export async function parseFile(
   }
 
   for (const row of rows) {
-    const dateValue = pickFirst(row, dateKeys);
-    const genValue = pickFirst(row, genKeys);
+    const dateValue = pickFirstFlexible(row, dateKeys, (k) =>
+      isLikelyDateKey(k)
+    );
+    const genValue = pickFirstFlexible(row, genKeys, (k) =>
+      isLikelyGenerationKey(k)
+    );
 
     if (!dateValue || genValue == null) {
       errors.push("日付または発電量が欠落している行をスキップしました。");
@@ -103,8 +123,12 @@ export async function parseFile(
     data.push({
       date,
       generation,
-      status: (row["ステータス"] as string) ?? (row["status"] as string),
-      notes: (row["備考"] as string) ?? (row["notes"] as string),
+      status:
+        (pickFirstFlexible(row, ["ステータス", "status", "状態"], () => false) as string) ??
+        undefined,
+      notes:
+        (pickFirstFlexible(row, ["備考", "notes", "メモ", "memo"], () => false) as string) ??
+        undefined,
     });
   }
 
@@ -121,11 +145,105 @@ export async function parseFile(
   };
 }
 
-function pickFirst(row: any, keys: string[]) {
-  for (const key of keys) {
+function normalizeKey(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[()[\]{}（）［］]/g, "")
+    .replace(/kwh/g, "")
+    .replace(/kw/g, "");
+}
+
+function pickFirstFlexible(
+  row: any,
+  preferredKeys: string[],
+  fallbackPredicate: (normalizedKey: string) => boolean
+) {
+  // 1) preferredKeys の完全一致
+  for (const key of preferredKeys) {
     if (row[key] != null) return row[key];
   }
+
+  // 2) preferredKeys の正規化一致（括弧/単位/空白揺れ対応）
+  const normalizedPreferred = preferredKeys.map(normalizeKey);
+  for (const rawKey of Object.keys(row)) {
+    const nk = normalizeKey(rawKey);
+    if (normalizedPreferred.includes(nk) && row[rawKey] != null) return row[rawKey];
+  }
+
+  // 3) それでも無い場合は、キー名から推定
+  for (const rawKey of Object.keys(row)) {
+    const nk = normalizeKey(rawKey);
+    if (fallbackPredicate(nk) && row[rawKey] != null) return row[rawKey];
+  }
+
   return null;
+}
+
+function isLikelyDateKey(normalizedKey: string) {
+  return (
+    normalizedKey.includes("日付") ||
+    normalizedKey === "date" ||
+    normalizedKey.includes("年月日")
+  );
+}
+
+function isLikelyGenerationKey(normalizedKey: string) {
+  // 発電量 / 発電電力量 / energy / generation など
+  return (
+    normalizedKey.includes("発電量") ||
+    normalizedKey.includes("発電電力量") ||
+    normalizedKey.includes("energy") ||
+    normalizedKey.includes("generation") ||
+    normalizedKey.includes("エネルギー")
+  );
+}
+
+function parseCsvLine(line: string): string[] {
+  // 簡易CSVパーサー（ダブルクォート対応）
+  const out: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      const next = line[i + 1];
+      if (inQuotes && next === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === "," && !inQuotes) {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+function parseCsvToObjects(csvText: string): any[] {
+  const lines = csvText
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return [];
+  const header = parseCsvLine(lines[0]).map((h) => h.trim());
+  const rows: any[] = [];
+  for (const line of lines.slice(1)) {
+    const cols = parseCsvLine(line);
+    const obj: Record<string, unknown> = {};
+    for (let i = 0; i < header.length; i++) {
+      obj[header[i]] = cols[i] ?? null;
+    }
+    rows.push(obj);
+  }
+  return rows;
 }
 
 function normalizeDate(value: any): Date | null {

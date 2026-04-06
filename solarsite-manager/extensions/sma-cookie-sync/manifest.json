@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "SMA Cookie Sync",
+  "version": "1.0",
+  "permissions": ["cookies", "tabs"],
+  "host_permissions": [
+    "https://www.sunnyportal.com/*",
+    "http://localhost:3000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

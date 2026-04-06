@@ -20,11 +20,14 @@ model User {
   alerts        Alert[]
   refreshTokens RefreshToken[]
   resetTokens   PasswordResetToken[]
+  smaCookieCaches SmaCookieCache[]
+  monitoringCredentials MonitoringCredential[]
 }
 
 model Site {
   id                       String           @id @default(cuid())
   siteName                 String
+  laplaceCode              String?          // 例: "J-043"（ラプラス CSV の発電所コードと照合）
   location                 String?
   capacity                 Float
   monitoringSystem         String
@@ -130,5 +133,31 @@ model CustomFormat {
 
   @@index([monitoringSystem, isActive])
   @@index([siteId, isActive])
+}
+
+model MonitoringCredential {
+  id                String   @id @default(cuid())
+  userId            String
+  systemId          String   // eco-megane / fusion-solar / sunny-portal / grand-arch / solar-monitor-sf / solar-monitor-se
+  loginId           String
+  encryptedPassword String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, systemId])
+  @@index([systemId])
+}
+
+model SmaCookieCache {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  cookieJson String   // JSON文字列（Playwright Cookie 配列）
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
 }
 

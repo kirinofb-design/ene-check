@@ -1,0 +1,118 @@
+"use client";
+
+import React, { useState } from "react";
+
+export default function ExcelExportSection() {
+  const [targetMonth, setTargetMonth] = useState("2026-03");
+  const [downloading, setDownloading] = useState(false);
+
+  async function handleDownload() {
+    setDownloading(true);
+    try {
+      const res = await fetch(`/api/reports/export-excel?month=${encodeURIComponent(targetMonth)}`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Excel の生成に失敗しました。");
+      }
+
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const fileNameMatch = /filename="?([^"]+)"?/.exec(disposition);
+      const fileName = fileNameMatch?.[1] ?? `generation_${targetMonth}.xlsx`;
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Excel ダウンロードに失敗しました。";
+      alert(message);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  // カード全体のスタイル
+  const cardStyle = {
+    backgroundColor: '#ffffff',
+    borderRadius: '16px',
+    border: '1px solid #e2e8f0',
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+    padding: '24px',
+    width: '100%',
+    height: '100%',
+    margin: '0',
+    fontFamily: 'sans-serif',
+    textAlign: 'left' as const,
+    display: 'flex',
+    flexDirection: 'column' as const,
+  };
+
+  const inputStyle = {
+    width: '180px',
+    padding: '10px 14px',
+    borderRadius: '8px',
+    border: '1px solid #cbd5e1',
+    fontSize: '14px',
+    marginTop: '8px',
+    outline: 'none',
+  };
+
+  const excelBtnStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '12px 24px',
+    backgroundColor: '#16a34a', // Excelカラーの緑
+    color: 'white',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '14px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    marginTop: '24px',
+    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+    opacity: downloading ? 0.7 : 1,
+  };
+
+  return (
+    <div style={{ textAlign: 'left', height: '100%' }}>
+      <div style={cardStyle}>
+        <div style={{ marginBottom: '20px' }}>
+          <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: '0' }}>
+            発電データ自動収集・Excel出力 (Phase 1)
+          </h2>
+          <p style={{ fontSize: '12px', color: '#64748b', marginTop: '6px', lineHeight: '1.6' }}>
+            対象月を選択してダウンロードしてください。<br/>
+            全サイトの日別発電データを1枚のExcelシートにまとめて出力します。
+          </p>
+        </div>
+
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#475569', textTransform: 'uppercase' }}>出力対象月</label><br/>
+          <input 
+            type="month" 
+            style={inputStyle} 
+            value={targetMonth} 
+            onChange={(e) => setTargetMonth(e.target.value)} 
+          />
+        </div>
+
+        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto' }}>
+          <button
+            style={excelBtnStyle}
+            onClick={() => void handleDownload()}
+            disabled={downloading}
+          >
+            <span style={{ fontSize: '18px' }}>📊</span>
+            {downloading ? "Excel を生成中..." : "Excel をダウンロード"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

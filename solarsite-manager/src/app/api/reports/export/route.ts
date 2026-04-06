@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import iconv from "iconv-lite";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
 
@@ -7,6 +8,14 @@ function parseDateParam(v: string | null): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
   const d = new Date(`${v}T00:00:00.000Z`);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// CSV フィールドを安全にエスケープ（カンマ/改行/ダブルクォート対応）
+function escapeCsv(value: unknown): string {
+  if (value == null) return "";
+  const s = String(value);
+  const escaped = s.replace(/"/g, '""');
+  return /[",\r\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
 export async function GET(request: Request) {
@@ -49,21 +58,23 @@ export async function GET(request: Request) {
     header.join(","),
     ...rows.map((r) =>
       [
-        `"${r.site?.siteName ?? ""}"`,
-        r.date.toISOString().slice(0, 10),
-        r.generation,
-        r.status ?? "",
-        r.notes ? `"${r.notes.replace(/"/g, '""')}"` : "",
+        escapeCsv(r.site?.siteName ?? ""),
+        escapeCsv(r.date.toISOString().slice(0, 10)),
+        r.generation, // 数値はそのまま
+        escapeCsv(r.status ?? ""),
+        escapeCsv(r.notes ?? ""),
       ].join(",")
     ),
   ];
 
-  const csv = lines.join("\r\n");
+  const csvUtf8 = lines.join("\r\n");
+  // Excel での文字化けを避けるため Shift-JIS でエンコード
+  const csvShiftJis = iconv.encode(csvUtf8, "shift_jis");
 
-  return new NextResponse(csv, {
+  return new NextResponse(csvShiftJis, {
     status: 200,
     headers: {
-      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Type": "text/csv; charset=Shift_JIS",
       "Content-Disposition": `attachment; filename="generation_export.csv"`,
     },
   });

@@ -3,21 +3,13 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
 
-export async function GET() {
-  // GET は Request を受け取らないため、未認証時の詳細な 401 応答はここでは行わない。
-  // ただし例外で落ちないように最低限ガードする。
-  try {
-    await requireAuth();
-    const sites = await prisma.site.findMany({
-      orderBy: { siteName: "asc" },
-    });
-    return NextResponse.json({ data: sites });
-  } catch {
-    return NextResponse.json(
-      { error: { code: "UNAUTHORIZED", message: "ログインが必要です。" } },
-      { status: 401 }
-    );
-  }
+export async function GET(request: Request) {
+  // Phase 3: アップロード画面の初期表示などで参照されるため
+  // サイト一覧取得は認証なしでも許可する（読み取りのみ）。
+  const sites = await prisma.site.findMany({
+    orderBy: { siteName: "asc" },
+  });
+  return NextResponse.json({ data: sites });
 }
 
 export async function POST(request: Request) {

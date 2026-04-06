@@ -8,7 +8,7 @@ import Link from "next/link";
 
 export default function LoginPage() {
   const searchParams = useSearchParams();
-  const from = searchParams.get("from") || "/dashboard";
+  const from = searchParams.get("from") || "/reports";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -43,70 +43,130 @@ export default function LoginPage() {
     }
   }
 
+  const pageStyle = {
+    width: "100%",
+    maxWidth: "1120px",
+    minHeight: "auto",
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "flex-start",
+    padding: "8px 0",
+  } as const;
+  const cardStyle = {
+    width: "100%",
+    maxWidth: "420px",
+    border: "1px solid #dbeafe",
+    borderRadius: "16px",
+    background: "#ffffff",
+    boxShadow: "0 14px 30px rgba(15, 23, 42, 0.08)",
+    padding: "22px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "14px",
+  };
+  const titleStyle = {
+    margin: 0,
+    fontSize: "30px",
+    lineHeight: 1.2,
+    fontWeight: 800,
+    color: "#0f172a",
+    letterSpacing: "-0.02em",
+  };
+  const descStyle = {
+    margin: 0,
+    fontSize: "13px",
+    color: "#475569",
+    lineHeight: 1.6,
+  };
+  const inputStyle = {
+    width: "100%",
+    borderRadius: "10px",
+    border: "1px solid #cbd5e1",
+    background: "#ffffff",
+    padding: "10px 12px",
+    fontSize: "14px",
+    color: "#0f172a",
+    outline: "none",
+  };
+  const primaryBtnStyle = {
+    width: "100%",
+    borderRadius: "10px",
+    border: "1px solid #0284c7",
+    background: "#0ea5e9",
+    padding: "10px 14px",
+    fontSize: "14px",
+    fontWeight: 700,
+    color: "#ffffff",
+    cursor: loading ? "not-allowed" : "pointer",
+    opacity: loading ? 0.7 : 1,
+  };
+
   return (
-    <div className="max-w-md mx-auto">
-      <h1 className="text-xl font-semibold mb-4">ログイン（F-1）</h1>
-      <p className="text-sm text-slate-400 mb-6">
-        Spec.md セクション 4.3 / 6.1 / 7 に基づき、メールアドレスとパスワードによる認証を行います。
-      </p>
+    <div style={pageStyle}>
+      <div style={cardStyle}>
+        <h1 style={titleStyle}>ログイン（F-1）</h1>
+        <p style={descStyle}>
+          メールアドレスとパスワードでログインしてください。
+        </p>
 
-      <form
-        onSubmit={handleSubmit}
-        className="space-y-4 rounded-md border border-slate-800 bg-slate-900/60 p-4"
-      >
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-slate-200">
-            メールアドレス
-          </label>
-          <input
-            type="email"
-            className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-        </div>
+        <form onSubmit={handleSubmit} style={{ display: "grid", gap: "12px" }}>
+          <div style={{ display: "grid", gap: "6px" }}>
+            <label style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
+              メールアドレス
+            </label>
+            <input
+              type="email"
+              style={inputStyle}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
 
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-slate-200">
-            パスワード
-          </label>
-          <input
-            type="password"
-            className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-          <p className="text-[10px] text-slate-500">
-            パスワードは 8〜128文字の英数字混在で入力してください。
+          <div style={{ display: "grid", gap: "6px" }}>
+            <label style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
+              パスワード
+            </label>
+            <input
+              type="password"
+              style={inputStyle}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+            <p style={{ margin: 0, fontSize: "11px", color: "#64748b" }}>
+              パスワードは 8〜128文字の英数字混在で入力してください。
+            </p>
+          </div>
+
+          {error && (
+            <p style={{ margin: 0, fontSize: "12px", color: "#b91c1c", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: "8px", padding: "8px 10px" }}>
+              {error}
+            </p>
+          )}
+
+          <button type="submit" disabled={loading} style={primaryBtnStyle}>
+            {loading ? "ログイン中..." : "ログイン"}
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "12px", color: "#64748b" }}>
+            <Link href="/forgot-password" style={{ color: "#0369a1", textDecoration: "none" }}>
+              パスワードをお忘れですか？
+            </Link>
+            <Link href="/signup" style={{ color: "#0369a1", textDecoration: "none" }}>
+              新規登録はこちら
+            </Link>
+          </div>
+        </form>
+
+        <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: "10px" }}>
+          <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+            テスト用ユーザー:
+            {" "}
+            <code style={{ fontFamily: "monospace", color: "#0f172a" }}>test@example.com / Test1234</code>
           </p>
         </div>
-
-        {error && (
-          <p className="text-xs text-red-400 bg-red-950/40 border border-red-900 rounded px-2 py-1">
-            {error}
-          </p>
-        )}
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-white hover:bg-sky-400 disabled:opacity-60"
-        >
-          {loading ? "ログイン中..." : "ログイン"}
-        </button>
-
-        <div className="flex items-center justify-between text-xs text-slate-400 mt-2">
-          <Link href="/auth/forgot-password">パスワードをお忘れですか？</Link>
-          <Link href="/auth/signup">新規登録はこちら</Link>
-        </div>
-      </form>
-
-      <p className="mt-4 text-xs text-slate-500">
-        テスト用ユーザー: <code>test@example.com / Test1234</code>
-        （`prisma/seed.ts` で作成）
-      </p>
+      </div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { auth, signOut } from "@/auth";
+import { ProtectedNavButtons } from "@/components/ProtectedNavButtons";
 
 async function logout() {
   "use server";
@@ -12,71 +12,48 @@ export default async function ProtectedLayout({
   children: React.ReactNode;
 }) {
   const session = await auth();
+  const navWrapStyle = {
+    width: "fit-content",
+    margin: "0",
+    padding: "0",
+  } as const;
+  const logoutBtnStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    borderRadius: "12px",
+    border: "1px solid #fb7185",
+    backgroundColor: "#f43f5e",
+    padding: "5px 10px",
+    fontSize: "11px",
+    fontWeight: 700,
+    color: "#ffffff",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.12)",
+    cursor: "pointer",
+  } as const;
 
   return (
-    <div className="space-y-4">
-      <nav className="border-b border-slate-800 pb-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pr-2 [-webkit-overflow-scrolling:touch]">
-            <Link
-              href="/dashboard"
-              className="text-sm text-slate-300 hover:text-sky-400"
-            >
-              ダッシュボード
-            </Link>
-            <Link
-              href="/sites"
-              className="text-sm text-slate-300 hover:text-sky-400"
-            >
-              サイト
-            </Link>
-            <Link
-              href="/upload"
-              className="text-sm text-slate-300 hover:text-sky-400"
-            >
-              アップロード
-            </Link>
-            <Link
-              href="/alerts"
-              className="text-sm text-slate-300 hover:text-sky-400"
-            >
-              アラート
-            </Link>
-            <Link
-              href="/reports"
-              className="text-sm text-slate-300 hover:text-sky-400"
-            >
-              レポート
-            </Link>
-            <Link
-              href="/history"
-              className="text-sm text-slate-300 hover:text-sky-400"
-            >
-              履歴
-            </Link>
-            <Link
-              href="/settings"
-              className="text-sm text-slate-300 hover:text-sky-400"
-            >
-              設定
-            </Link>
+    <div className="space-y-8">
+      <div style={{ width: "100%", maxWidth: "1120px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <nav style={navWrapStyle}>
+          <div className="flex items-center justify-between gap-3">
+            <ProtectedNavButtons />
           </div>
-
-          <div className="flex items-center gap-3 shrink-0">
-            <span className="hidden sm:inline text-xs text-slate-500">
-              {session?.user?.email}
-            </span>
-            <form action={logout}>
-              <button
-                type="submit"
-                className="text-xs text-slate-500 hover:text-red-400"
-              >
-                ログアウト
-              </button>
-            </form>
-          </div>
+        </nav>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
+          <form action={logout}>
+            <button
+              type="submit"
+              className="inline-flex items-center rounded-xl border border-rose-300 bg-rose-500 px-3 py-1.5 text-xs font-bold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-rose-600 hover:shadow active:translate-y-0"
+              style={logoutBtnStyle}
+            >
+              ログアウト
+            </button>
+          </form>
+          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", textAlign: "right" }}>
+            ログインID：{session?.user?.email ?? "-"}
+          </span>
         </div>
-      </nav>
+      </div>
       {children}
     </div>
   );

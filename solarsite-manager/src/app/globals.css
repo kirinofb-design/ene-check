@@ -2,20 +2,53 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
-body {
-  height: 100%;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --background: #f8fafc; /* 薄いグレー */
+  --foreground: #0f172a;
 }
 
 body {
-  @apply bg-slate-950 text-slate-50 antialiased;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: sans-serif;
 }
 
-a {
-  @apply text-sky-400 hover:text-sky-300 underline-offset-2 hover:underline;
+.settings-credential-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 
-main {
-  @apply min-h-screen;
+.settings-credential-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
 }
 
+@media (min-width: 960px) {
+  .settings-credential-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+}
+
+.reports-two-col {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+  align-items: stretch;
+}
+
+@media (min-width: 960px) {
+  .reports-two-col {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

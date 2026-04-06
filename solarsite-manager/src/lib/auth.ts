@@ -21,7 +21,11 @@ export async function getServerSession(): Promise<Session | null> {
 
 // 未認証ならエラーを投げる（API 用）
 export async function requireAuth(request?: Request): Promise<Session> {
-  const session = request ? await auth(request) : await auth();
+  // Route Handler では Request を渡すと環境によってセッション解決が不安定になることがあるため、
+  // 引数は受け取るが常に auth()（引数なし）でセッションを解決する。
+  // ※ middleware 側で保護する/同一オリジン Cookie を前提にする。
+  void request;
+  const session = await auth();
   if (!session || !session.user) {
     throw new Error("UNAUTHORIZED");
   }

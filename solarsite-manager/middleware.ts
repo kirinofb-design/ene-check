@@ -19,20 +19,24 @@ const protectedRoutes = [
 export default auth((req) => {
   const { nextUrl } = req;
   const isLoggedIn = !!req.auth;
-  const isAuthPage = nextUrl.pathname.startsWith("/auth");
+  const isAuthPage =
+    nextUrl.pathname === "/login" ||
+    nextUrl.pathname === "/signup" ||
+    nextUrl.pathname === "/forgot-password" ||
+    nextUrl.pathname.startsWith("/reset-password/");
   const isProtected = protectedRoutes.some((path) =>
     nextUrl.pathname.startsWith(path)
   );
   const requestId = req.headers.get("x-request-id") ?? createRequestId();
 
   if (isLoggedIn && isAuthPage) {
-    const res = NextResponse.redirect(new URL("/dashboard", nextUrl.origin));
+    const res = NextResponse.redirect(new URL("/reports", nextUrl.origin));
     res.headers.set("x-request-id", requestId);
     return res;
   }
 
   if (!isLoggedIn && isProtected) {
-    const loginUrl = new URL("/auth/login", nextUrl.origin);
+    const loginUrl = new URL("/login", nextUrl.origin);
     loginUrl.searchParams.set("from", nextUrl.pathname);
     const res = NextResponse.redirect(loginUrl);
     res.headers.set("x-request-id", requestId);

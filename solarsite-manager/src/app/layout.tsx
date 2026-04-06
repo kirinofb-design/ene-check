@@ -18,12 +18,9 @@ export default function RootLayout({
         <SessionProvider>
         <div className="min-h-screen flex flex-col">
           <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur">
-            <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+            <div className="w-full flex items-center" style={{ maxWidth: "420px", padding: "12px 0", margin: "0" }}>
               <span className="text-sm font-semibold tracking-wide text-sky-400">
                 SolarSite Manager
-              </span>
-              <span className="text-xs text-slate-400">
-                Spec.md を唯一の正解として実装中
               </span>
             </div>
           </header>
@@ -31,7 +28,7 @@ export default function RootLayout({
             {children}
           </main>
           <footer className="border-t border-slate-800 bg-slate-900/60">
-            <div className="mx-auto max-w-6xl px-4 py-3 text-xs text-slate-500 flex justify-between">
+            <div className="w-full text-xs text-slate-500 flex justify-between" style={{ maxWidth: "420px", padding: "12px 0", margin: "0" }}>
               <span>© {new Date().getFullYear()} SolarSite Manager</span>
               <span>Phase 1 MVP</span>
             </div>
