@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { MONITORING_AUTH_TARGETS } from "@/lib/monitoringSystemsAuth";
+import {
+  MONITORING_AUTH_TARGETS,
+  type MonitoringSystemAuthTarget,
+} from "@/lib/monitoringSystemsAuth";
 
 type CredentialRow = {
   systemId: string;
@@ -192,7 +195,7 @@ export function MonitoringCredentialsForm() {
     color: "#ffffff",
     cursor: "pointer",
   };
-  const orderedTargetIds = [
+  const orderedTargetIds: MonitoringSystemAuthTarget["systemId"][] = [
     "eco-megane",
     "fusion-solar",
     "sunny-portal",

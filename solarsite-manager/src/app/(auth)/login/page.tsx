@@ -1,12 +1,24 @@
 
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { signIn } from "next-auth/react";
 import Link from "next/link";
 
 export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div style={{ padding: "24px", fontSize: "14px", color: "#64748b" }}>読み込み中...</div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const searchParams = useSearchParams();
   const from = searchParams.get("from") || "/reports";
 

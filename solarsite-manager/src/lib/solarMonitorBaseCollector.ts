@@ -325,7 +325,7 @@ async function loginAndNavigateToPlantList(page: Page, config: SolarMonitorLogin
 
   if (openPlantListFromMenu) {
     console.log(`[${systemId}] 発電状況ボタン (#cphMain_ibtnHatsudenJokyo) をクリックします...`);
-    await page.waitForSelector("#cphMain_ibtnHatsudenJokyo", { visible: true, timeout: 15_000 });
+    await page.waitForSelector("#cphMain_ibtnHatsudenJokyo", { state: "visible", timeout: 15_000 });
     await Promise.all([
       page.waitForNavigation({ waitUntil: "networkidle", timeout: 15_000 }).catch(() => {
         console.log("[DEBUG] Navigation timeout ignored (Ajax/PostBack potential)");

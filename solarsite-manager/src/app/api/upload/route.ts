@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
@@ -81,7 +82,7 @@ export async function POST(request: Request) {
 }
 
 async function ensureSiteForUpload(
-  tx: typeof prisma,
+  tx: Prisma.TransactionClient,
   fileName: string
 ): Promise<string> {
   // MVP では単純に既存サイトの先頭を利用し、なければ汎用サイトを1つ作る。

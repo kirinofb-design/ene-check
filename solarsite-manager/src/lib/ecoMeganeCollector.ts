@@ -139,7 +139,7 @@ export async function runEcoMeganeCollector(
       await page.waitForTimeout(5000);
     }
 
-    logger.info("current URL after goto", { url: page.url() });
+    logger.info("current URL after goto", { extra: { url: page.url() } });
 
     // デバッグ用スクリーンショット（ステップ5後）
     const debugScreenshotPath = path.join(os.tmpdir(), "eco-megane-collector-debug.png");

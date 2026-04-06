@@ -197,7 +197,7 @@ async function configureLaplaceDownloadForm(page: Page, yearMonth: string): Prom
 
 async function loginLaplace(page: any, loginId: string, password: string) {
   // ステップ3: 利用規約アラート等の window.alert — page.goto() より前に登録
-  page.on("dialog", async (dialog) => {
+  page.on("dialog", async (dialog: { message(): string; accept(): Promise<void> }) => {
     console.log("dialog:", dialog.message());
     await dialog.accept().catch(() => {});
   });
@@ -372,7 +372,7 @@ async function openGrandArchFromServiceList(page: any): Promise<any> {
 
     if (!clicked) {
       const links = (await page
-        .$$eval("a, button", (els) =>
+        .$$eval("a, button", (els: Element[]) =>
           els.map((e) => ({
             tag: e.tagName,
             text: (e.textContent ?? "").trim(),
@@ -409,7 +409,7 @@ async function navigateToDownloadFromTop(page: Page): Promise<void> {
   console.log("all status loaded");
 
   // ダイアログ自動承認
-  page.on("dialog", async (dialog) => {
+  page.on("dialog", async (dialog: { message(): string; accept(): Promise<void> }) => {
     console.log("dialog:", dialog.message());
     await dialog.accept().catch(() => {});
   });

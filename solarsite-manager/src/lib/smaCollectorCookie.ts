@@ -229,9 +229,11 @@ export async function runSmaCollectorCookie(
 
     // Playwright: context.addCookies / context.cookies
     // Puppeteer: page.setCookie / page.cookies
-    const hasPlaywrightContext = page && typeof page.context === "function";
-    const context = hasPlaywrightContext ? page.context() : null;
-    const canAddCookies = context && typeof context.addCookies === "function";
+    const pw = page as { context?: () => { addCookies?: (cookies: unknown) => Promise<void> } };
+    const hasPlaywrightContext = pw && typeof pw.context === "function";
+    const context = hasPlaywrightContext ? pw.context!() : null;
+    const addCookiesFn =
+      context && typeof context.addCookies === "function" ? context.addCookies : null;
     logger.info("smaCollector: cookies to inject", {
       userId,
       extra: {
@@ -261,8 +263,8 @@ export async function runSmaCollectorCookie(
       httpOnly: c.httpOnly,
       sameSite: c.sameSite,
     }));
-    if (canAddCookies) {
-      await context.addCookies(cookiesForPlaywright);
+    if (addCookiesFn) {
+      await addCookiesFn(cookiesForPlaywright);
     } else {
       await page.setCookie(...cookiesForPuppeteer);
     }
