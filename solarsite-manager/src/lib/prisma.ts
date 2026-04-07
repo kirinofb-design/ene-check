@@ -10,7 +10,6 @@ export const prisma =
     log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
   });
 
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-}
+// Vercel などサーバーレスではインスタンスを使い回さないと接続枯渇・不安定化しやすい
+globalForPrisma.prisma = prisma;
 

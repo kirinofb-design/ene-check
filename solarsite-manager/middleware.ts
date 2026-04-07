@@ -51,7 +51,10 @@ export default auth((req) => {
   return res;
 });
 
+// NextAuth の /api/auth/* はミドルウェアを通さない（Edge 上の auth 処理と二重になり 500 になることがある）
 export const config = {
-  matcher: ["/((?!api/health|_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!api/health|api/auth|_next/static|_next/image|favicon.ico).*)",
+  ],
 };
 
