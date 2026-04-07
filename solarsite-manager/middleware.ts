@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import NextAuth from "next-auth";
+import { authConfig } from "@/auth.config";
+
+const { auth } = NextAuth(authConfig);
 
 function createRequestId() {
   // セキュアなIDでなくても相関IDとして十分（ログ/問い合わせ用途）

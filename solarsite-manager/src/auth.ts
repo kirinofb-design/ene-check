@@ -1,16 +1,13 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import { authConfig } from "@/auth.config";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/auth";
 
 // `secret` をここで渡さない（空文字がビルドに埋め込まれると MissingSecret になるため）。
 // next-auth が setEnvDefaults で AUTH_SECRET / NEXTAUTH_SECRET を読む。
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  trustHost: true,
-  pages: {
-    signIn: "/login",
-    error: "/login",
-  },
+  ...authConfig,
   providers: [
     Credentials({
       name: "Credentials",
@@ -60,24 +57,4 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
     }),
   ],
-  session: {
-    strategy: "jwt",
-  },
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.id = (user as any).id;
-        (token as any).role = (user as any).role;
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        (session.user as any).id = (token as any).id;
-        (session.user as any).role = (token as any).role;
-      }
-      return session;
-    },
-  },
 });
-
