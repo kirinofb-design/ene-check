@@ -46,18 +46,34 @@ function LoginForm() {
       return;
     }
 
-    // next-auth の redirect:false は data.url が相対だと内部の new URL(data.url) で例外になり、
-    // 何も起きないことがある（本番で多い）。redirect:true ならその経路を避けられる。
+    // 絶対URLで渡すと next-auth クライアント側の URL 解析エラーを避けられる。
     const callbackUrl = new URL(from, window.location.origin).href;
 
     setLoading(true);
     try {
-      await signIn("credentials", {
-        redirect: true,
+      const result = await signIn("credentials", {
+        redirect: false,
         email,
         password,
         callbackUrl,
       });
+
+      if (!result) {
+        setError("ログインに失敗しました。もう一度お試しください。");
+        return;
+      }
+
+      if (result.error) {
+        setError("メールアドレスまたはパスワードが正しくありません。");
+        return;
+      }
+
+      if (result.url) {
+        window.location.href = result.url;
+        return;
+      }
+
+      setError("ログイン結果を取得できませんでした。");
     } catch {
       setError("ログインに失敗しました。もう一度お試しください。");
     } finally {
