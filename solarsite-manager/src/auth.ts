@@ -24,6 +24,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             return null;
           }
 
+          const emailNorm = email.trim().toLowerCase();
+          if (!emailNorm) {
+            return null;
+          }
+
           // パスワードルール: 8〜128文字、英字＋数字を含む
           const isValidFormat =
             typeof password === "string" &&
@@ -37,7 +42,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           }
 
           const user = await prisma.user.findUnique({
-            where: { email },
+            where: { email: emailNorm },
           });
 
           if (!user) {
