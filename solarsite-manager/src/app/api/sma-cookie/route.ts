@@ -16,24 +16,43 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const userId = (session.user as { id: string }).id;
-    const body = (await request.json()) as { formsLogin?: string };
-    const formsLogin = body?.formsLogin;
-    if (!formsLogin) {
-      return NextResponse.json({ error: "formsLogin is required" }, { status: 400 });
-    }
-
+    const body = (await request.json()) as { formsLogin?: string; cookieJson?: string };
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const cookieJson = JSON.stringify([
-      {
-        name: ".SunnyPortalFormsLogin",
-        value: formsLogin,
-        domain: "www.sunnyportal.com",
-        path: "/",
-        httpOnly: true,
-        secure: true,
-        sameSite: "Lax",
-      },
-    ]);
+
+    let cookieJson: string;
+    if (typeof body?.cookieJson === "string" && body.cookieJson.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(body.cookieJson) as unknown;
+        if (!Array.isArray(parsed) || parsed.length === 0) {
+          return NextResponse.json(
+            { error: "cookieJson must be a non-empty JSON array" },
+            { status: 400 }
+          );
+        }
+        cookieJson = JSON.stringify(parsed);
+      } catch {
+        return NextResponse.json({ error: "cookieJson is not valid JSON" }, { status: 400 });
+      }
+    } else {
+      const formsLogin = body?.formsLogin?.trim();
+      if (!formsLogin) {
+        return NextResponse.json(
+          { error: "formsLogin or cookieJson (array) is required" },
+          { status: 400 }
+        );
+      }
+      cookieJson = JSON.stringify([
+        {
+          name: ".SunnyPortalFormsLogin",
+          value: formsLogin,
+          domain: "www.sunnyportal.com",
+          path: "/",
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+        },
+      ]);
+    }
 
     // 新スキーマ(userId @unique)を優先しつつ、
     // 旧クライアント(userId+plantName 複合 unique)でも保存できるようフォールバックする。
@@ -55,7 +74,7 @@ export async function POST(request: Request) {
       });
     }
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, expiresAt: expiresAt.toISOString() });
   } catch (error) {
     console.error("sma-cookie POST error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

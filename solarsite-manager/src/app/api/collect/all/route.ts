@@ -15,6 +15,24 @@ type CollectorStepResult = {
   errorCount: number;
 };
 
+async function runNamedCollector(
+  key: string,
+  runner: () => Promise<{ ok: boolean; message: string; recordCount: number; errorCount: number }>
+): Promise<CollectorStepResult> {
+  try {
+    const result = await runner();
+    return { key, ...result };
+  } catch (e) {
+    return {
+      key,
+      ok: false,
+      message: e instanceof Error ? e.message : "コレクター実行に失敗しました。",
+      recordCount: 0,
+      errorCount: 0,
+    };
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const session = await requireAuth(request);
@@ -33,73 +51,36 @@ export async function POST(request: Request) {
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
-    const steps: CollectorStepResult[] = [];
-    let recordCount = 0;
-    let errorCount = 0;
-
-    const runStep = async (
-      key: string,
-      runner: () => Promise<{ ok: boolean; message: string; recordCount: number; errorCount: number }>
-    ) => {
-      const result = await runner();
-      steps.push({ key, ...result });
-      recordCount += result.recordCount;
-      errorCount += result.errorCount;
-    };
-
-    const runStepThrowing = async (
-      key: string,
-      runner: () => Promise<{ recordCount: number; errorCount: number }>,
+    const runSolarMonitorStep = async (
+      key: "solar-monitor-sf" | "solar-monitor-se",
       successMessage: string
-    ) => {
-      const result = await runner();
-      steps.push({ key, ok: true, message: successMessage, ...result });
-      recordCount += result.recordCount;
-      errorCount += result.errorCount;
-    };
-
-    // 失敗時も次へ進めるため、各ステップ単位で握って集約する
-    const tasks: Array<{ key: string; run: () => Promise<void> }> = [
-      { key: "eco-megane", run: () => runStep("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
-      {
-        key: "fusion-solar",
-        run: () => runStep("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)),
-      },
-      { key: "sma", run: () => runStep("sma", () => runSmaCollector(userId, startDate, endDate)) },
-      { key: "laplace", run: () => runStep("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
-      {
-        key: "solar-monitor-sf",
-        run: () =>
-          runStepThrowing(
-            "solar-monitor-sf",
-            () => runSolarMonitorCollector(userId, startDate, endDate, "solar-monitor-sf"),
-            "Solar Monitor（池新田・本社）データ取得が完了しました。"
-          ),
-      },
-      {
-        key: "solar-monitor-se",
-        run: () =>
-          runStepThrowing(
-            "solar-monitor-se",
-            () => runSolarMonitorCollector(userId, startDate, endDate, "solar-monitor-se"),
-            "Solar Monitor（須山）データ取得が完了しました。"
-          ),
-      },
-    ];
-
-    for (const task of tasks) {
+    ): Promise<CollectorStepResult> => {
       try {
-        await task.run();
+        const result = await runSolarMonitorCollector(userId, startDate, endDate, key);
+        return { key, ok: true, message: successMessage, ...result };
       } catch (e) {
-        steps.push({
-          key: task.key,
+        return {
+          key,
           ok: false,
           message: e instanceof Error ? e.message : "コレクター実行に失敗しました。",
           recordCount: 0,
           errorCount: 0,
-        });
+        };
       }
-    }
+    };
+
+    // 6 システムを同時起動（所要時間の短縮）。SQLite では同時書き込みでロックが出ることがある。
+    const steps = await Promise.all([
+      runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)),
+      runNamedCollector("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)),
+      runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)),
+      runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)),
+      runSolarMonitorStep("solar-monitor-sf", "Solar Monitor（池新田・本社）データ取得が完了しました。"),
+      runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
+    ]);
+
+    const recordCount = steps.reduce((sum, s) => sum + s.recordCount, 0);
+    const errorCount = steps.reduce((sum, s) => sum + s.errorCount, 0);
 
     const allOk = steps.every((s) => s.ok);
     const statusWord = allOk ? "完了" : "一部失敗";

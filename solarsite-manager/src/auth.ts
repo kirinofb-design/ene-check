@@ -3,11 +3,14 @@ import Credentials from "next-auth/providers/credentials";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/auth";
 
-// next-auth beta と Next.js 14.1 の組み合わせで /api/auth/error が 500 になる回避策
-delete process.env.AUTH_URL;
-delete process.env.NEXTAUTH_URL;
-
+// `secret` をここで渡さない（空文字がビルドに埋め込まれると MissingSecret になるため）。
+// next-auth が setEnvDefaults で AUTH_SECRET / NEXTAUTH_SECRET を読む。
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  trustHost: true,
+  pages: {
+    signIn: "/login",
+    error: "/login",
+  },
   providers: [
     Credentials({
       name: "Credentials",

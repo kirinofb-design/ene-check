@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
+import { defaultCollectDateRange } from "@/lib/reportDateDefaults";
 
 export default function DataCollectSection() {
-  const [startDate, setStartDate] = useState("2026-03-01");
-  const [endDate, setEndDate] = useState("2026-03-30");
+  const [range, setRange] = useState(() => defaultCollectDateRange());
   const [loading, setLoading] = useState<string | null>(null);
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
@@ -16,6 +16,40 @@ export default function DataCollectSection() {
     all: "/api/collect/all",
   };
 
+  const collectorStepLabel: Record<string, string> = {
+    "eco-megane": "エコめがね",
+    "fusion-solar": "FusionSolar",
+    sma: "SMA",
+    laplace: "ラプラス",
+    "solar-monitor-sf": "池新田・本社（Solar Monitor）",
+    "solar-monitor-se": "須山（Solar Monitor）",
+  };
+
+  type CollectStep = {
+    key: string;
+    ok: boolean;
+    message: string;
+    recordCount: number;
+    errorCount: number;
+  };
+
+  const formatAllCollectResult = (data: {
+    message?: string;
+    steps?: CollectStep[];
+  }): string => {
+    const head = data.message ?? "一括取得が終了しました。";
+    const raw = Array.isArray(data.steps) ? data.steps : [];
+    if (raw.length === 0) return head;
+    // 失敗を先に表示（スクロールせず原因が分かるようにする）
+    const steps = [...raw].sort((a, b) => Number(a.ok) - Number(b.ok));
+    const lines = steps.map((s) => {
+      const name = collectorStepLabel[s.key] ?? s.key;
+      const mark = s.ok ? "成功" : "失敗";
+      return `［${mark}］ ${name}\n  ${s.message}\n  （保存 ${s.recordCount} 件 / スキップ ${s.errorCount} 件）`;
+    });
+    return `${head}\n\n──────── システム別（失敗を上に表示）────────\n\n${lines.join("\n\n")}`;
+  };
+
   const handleCollect = async (systemName: string) => {
     setLoading(systemName);
     try {
@@ -23,10 +57,19 @@ export default function DataCollectSection() {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startDate, endDate, system: systemName }),
+        body: JSON.stringify({
+          startDate: range.startDate,
+          endDate: range.endDate,
+          system: systemName,
+        }),
       });
       const data = await response.json();
-      
+
+      if (systemName === "all" && Array.isArray(data.steps)) {
+        alert(formatAllCollectResult(data));
+        return;
+      }
+
       if (data.ok) {
         alert(`${systemName}: ${data.message}`);
       } else {
@@ -103,11 +146,21 @@ export default function DataCollectSection() {
         <div style={{ display: 'flex', gap: '16px', marginBottom: '24px' }}>
           <div>
             <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#64748b' }}>開始日</label><br/>
-            <input type="date" style={inputStyle} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            <input
+              type="date"
+              style={inputStyle}
+              value={range.startDate}
+              onChange={(e) => setRange((r) => ({ ...r, startDate: e.target.value }))}
+            />
           </div>
           <div>
             <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#64748b' }}>終了日</label><br/>
-            <input type="date" style={inputStyle} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            <input
+              type="date"
+              style={inputStyle}
+              value={range.endDate}
+              onChange={(e) => setRange((r) => ({ ...r, endDate: e.target.value }))}
+            />
           </div>
         </div>
 

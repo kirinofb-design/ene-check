@@ -143,14 +143,13 @@ export async function runSmaCollectorCookie(
   if (!start || !end) return { ok: false, message: "日付形式が不正です", recordCount: 0, errorCount: 0 };
 
   let recordCount = 0;
-  let errorCount = 0;
 
   const cookieRow = await prisma.smaCookieCache.findFirst({
     where: { userId, expiresAt: { gt: new Date() } },
     select: { cookieJson: true, expiresAt: true },
   });
   if (!cookieRow) {
-    throw new Error(SMA_COOKIE_MISSING_ERROR);
+    return { ok: false, message: SMA_COOKIE_MISSING_ERROR, recordCount: 0, errorCount: 0 };
   }
   logger.info("smaCollector: loaded cookie json", {
     userId,
@@ -196,9 +195,24 @@ export async function runSmaCollectorCookie(
   if (!Array.isArray(parsedCookies) || parsedCookies.length === 0) {
     return { ok: false, message: "SMA Cookie が不正です。再登録してください。", recordCount: 0, errorCount: 0 };
   }
-  const cookiesToInject = parsedCookies.filter((c) => c.name === ".SunnyPortalFormsLogin" || c.name === "SunnyPortalFormsLogin");
+
+  const formsLoginOnly = parsedCookies.filter(
+    (c) => c.name === ".SunnyPortalFormsLogin" || c.name === "SunnyPortalFormsLogin"
+  );
+  const portalCookies = parsedCookies.filter((c) => /sunnyportal\.com/i.test(c.domain ?? ""));
+  const hasFormsInPortal = portalCookies.some((c) => /SunnyPortalFormsLogin/i.test(c.name));
+  // 複数 Cookie を登録済みなら sunnyportal 向けをまとめて注入（セッション維持に有効）
+  const cookiesToInject =
+    portalCookies.length >= 2 && hasFormsInPortal ? portalCookies : formsLoginOnly;
+
   if (cookiesToInject.length === 0) {
-    return { ok: false, message: ".SunnyPortalFormsLogin が見つかりません。再登録してください。", recordCount: 0, errorCount: 0 };
+    return {
+      ok: false,
+      message:
+        ".SunnyPortalFormsLogin が見つかりません。設定で value のみ、または Chrome の Cookie 配列（JSON）を登録してください。",
+      recordCount: 0,
+      errorCount: 0,
+    };
   }
 
   const puppeteer = (await import("puppeteer-extra")).default;
@@ -313,11 +327,20 @@ export async function runSmaCollectorCookie(
       extra: { title: plantsTitle, url: plantsUrl, isAuthenticated },
     });
     if (!isAuthenticated) {
-      throw new Error("Sunny Portal の認証に失敗しました。Cookie を再登録してください。");
+      return {
+        ok: false,
+        message:
+          "Sunny Portal の認証に失敗しました。Cookie を再登録するか、設定の「Cookie 配列（JSON）」で www.sunnyportal.com の Cookie をまとめて登録してください。",
+        recordCount: 0,
+        errorCount: 0,
+      };
     }
+
+    let stationErrors = 0;
 
     // 発電所ループ: /Plants のリンクから plantOid を取得し、RedirectToPlant -> EnergyAndPower
     for (const station of SMA_STATIONS) {
+      try {
       const plantName = station.displayName;
       logger.info("smaCollector: processing station", { userId, extra: { plantName } });
       await page.goto("https://www.sunnyportal.com/Plants", { waitUntil: "domcontentloaded" });
@@ -336,7 +359,7 @@ export async function runSmaCollectorCookie(
       }, plantName);
       if (!plantOid) {
         logger.warn("smaCollector: plantOid not found on /Plants", { userId, extra: { plantName } });
-        errorCount++;
+        stationErrors++;
         continue;
       }
 
@@ -373,7 +396,7 @@ export async function runSmaCollectorCookie(
           userId,
           extra: { plantName, plantOid, afterRedirectUrl, afterRedirectTitle },
         });
-        errorCount++;
+        stationErrors++;
         continue;
       }
 
@@ -389,7 +412,12 @@ export async function runSmaCollectorCookie(
       });
 
       if (!isEnergyPage) {
-        throw new Error(`EnergyAndPower.aspx に到達できませんでした: ${plantName}`);
+        logger.warn("smaCollector: EnergyAndPower page not reached", {
+          userId,
+          extra: { plantName, title, url },
+        });
+        stationErrors++;
+        continue;
       }
 
       const site = await prisma.site.findFirst({
@@ -397,7 +425,12 @@ export async function runSmaCollectorCookie(
         select: { id: true },
       });
       if (!site) {
-        throw new Error(`SMA siteName に対応する Site が見つかりません: ${station.siteName}`);
+        logger.warn("smaCollector: Site row missing for SMA station", {
+          userId,
+          extra: { siteName: station.siteName, plantName },
+        });
+        stationErrors++;
+        continue;
       }
 
       const tableRows = await extractTableRows(page);
@@ -440,17 +473,32 @@ export async function runSmaCollectorCookie(
         });
         recordCount++;
       }
+      } catch (stationErr) {
+        logger.warn("smaCollector: station run failed", {
+          userId,
+          extra: { station: station.displayName, error: String(stationErr) },
+        });
+        stationErrors++;
+      }
     }
 
+    const allStationsFailed = stationErrors >= SMA_STATIONS.length && recordCount === 0;
     return {
-      ok: true,
-      message: `SMA EnergyAndPower の取得調査が完了しました（成功: ${SMA_STATIONS.length - errorCount}件 / 失敗: ${errorCount}件）`,
+      ok: !allStationsFailed,
+      message: allStationsFailed
+        ? `SMA の全発電所で取得に失敗しました（${SMA_STATIONS.length} 件）。Cookie ・発電所名（${SMA_STATIONS.map((s) => s.displayName).join(" / ")}）を確認してください。`
+        : `SMA データ取得が完了しました（保存: ${recordCount} 件 / 発電所スキップ: ${stationErrors} 件）。`,
       recordCount,
-      errorCount,
+      errorCount: stationErrors,
     };
   } catch (e) {
     logger.error("smaCollectorCookie failed", { userId }, e);
-    throw e;
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : "SMA データ取得に失敗しました。",
+      recordCount,
+      errorCount: 0,
+    };
   } finally {
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     await browser.close().catch(() => {});

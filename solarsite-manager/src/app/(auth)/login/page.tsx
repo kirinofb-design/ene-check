@@ -18,9 +18,19 @@ export default function LoginPage() {
   );
 }
 
+function loginErrorMessage(code: string | null): string | null {
+  if (!code) return null;
+  if (code === "CredentialsSignin")
+    return "メールアドレスまたはパスワードが正しくありません。";
+  if (code === "Configuration")
+    return "認証の設定に問題があります。管理者に連絡してください。";
+  return "ログインに失敗しました。もう一度お試しください。";
+}
+
 function LoginForm() {
   const searchParams = useSearchParams();
   const from = searchParams.get("from") || "/reports";
+  const urlAuthError = loginErrorMessage(searchParams.get("error"));
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -122,6 +132,22 @@ function LoginForm() {
         </p>
 
         <form onSubmit={handleSubmit} style={{ display: "grid", gap: "12px" }}>
+          {(error || urlAuthError) && (
+            <p
+              style={{
+                margin: 0,
+                fontSize: "12px",
+                color: "#b91c1c",
+                background: "#fee2e2",
+                border: "1px solid #fecaca",
+                borderRadius: "8px",
+                padding: "8px 10px",
+              }}
+            >
+              {error ?? urlAuthError}
+            </p>
+          )}
+
           <div style={{ display: "grid", gap: "6px" }}>
             <label style={{ fontSize: "12px", fontWeight: 700, color: "#334155" }}>
               メールアドレス
@@ -150,12 +176,6 @@ function LoginForm() {
               パスワードは 8〜128文字の英数字混在で入力してください。
             </p>
           </div>
-
-          {error && (
-            <p style={{ margin: 0, fontSize: "12px", color: "#b91c1c", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: "8px", padding: "8px 10px" }}>
-              {error}
-            </p>
-          )}
 
           <button type="submit" disabled={loading} style={primaryBtnStyle}>
             {loading ? "ログイン中..." : "ログイン"}

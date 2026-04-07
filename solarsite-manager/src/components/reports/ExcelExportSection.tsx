@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
+import { defaultExcelMonth } from "@/lib/reportDateDefaults";
 
 export default function ExcelExportSection() {
-  const [targetMonth, setTargetMonth] = useState("2026-03");
+  const [targetMonth, setTargetMonth] = useState(() => defaultExcelMonth());
   const [downloading, setDownloading] = useState(false);
 
   async function handleDownload() {
