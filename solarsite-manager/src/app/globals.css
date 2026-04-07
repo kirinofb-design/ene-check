@@ -40,6 +40,11 @@ body {
   }
 }
 
+/* 監視サイト用（Chrome 等）: type=text のまま伏せ字にし、パスワード自動入力の誤検出を避ける */
+.monitoring-secret-input {
+  -webkit-text-security: disc;
+}
+
 .reports-two-col {
   display: grid;
   grid-template-columns: 1fr;

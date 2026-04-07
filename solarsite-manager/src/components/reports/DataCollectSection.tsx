@@ -1,10 +1,14 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { defaultCollectDateRange } from "@/lib/reportDateDefaults";
 
 export default function DataCollectSection() {
   const [range, setRange] = useState(() => defaultCollectDateRange());
+
+  useEffect(() => {
+    setRange(defaultCollectDateRange());
+  }, []);
   const [loading, setLoading] = useState<string | null>(null);
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
@@ -101,6 +105,8 @@ export default function DataCollectSection() {
     padding: '8px 12px',
     borderRadius: '8px',
     border: '1px solid #cbd5e1',
+    backgroundColor: '#ffffff',
+    color: '#0f172a',
     fontSize: '14px',
     marginTop: '6px',
     outline: 'none',

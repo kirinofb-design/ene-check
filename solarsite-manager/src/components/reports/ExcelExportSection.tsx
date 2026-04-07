@@ -1,10 +1,14 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { defaultExcelMonth } from "@/lib/reportDateDefaults";
 
 export default function ExcelExportSection() {
   const [targetMonth, setTargetMonth] = useState(() => defaultExcelMonth());
+
+  useEffect(() => {
+    setTargetMonth(defaultExcelMonth());
+  }, []);
   const [downloading, setDownloading] = useState(false);
 
   async function handleDownload() {
@@ -58,6 +62,8 @@ export default function ExcelExportSection() {
     padding: '10px 14px',
     borderRadius: '8px',
     border: '1px solid #cbd5e1',
+    backgroundColor: '#ffffff',
+    color: '#0f172a',
     fontSize: '14px',
     marginTop: '8px',
     outline: 'none',

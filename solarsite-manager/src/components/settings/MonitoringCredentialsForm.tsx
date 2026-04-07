@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   MONITORING_AUTH_TARGETS,
   type MonitoringSystemAuthTarget,
@@ -21,6 +21,13 @@ type RowState = {
 
 export function MonitoringCredentialsForm() {
   const targets = useMemo(() => MONITORING_AUTH_TARGETS, []);
+  /** ページ表示のたびに変わる name で、保存済みサイトログインとの自動入力マッチを避ける */
+  const [autofillFieldKey] = useState(() => {
+    const c = globalThis.crypto;
+    return typeof c?.randomUUID === "function"
+      ? c.randomUUID()
+      : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +37,29 @@ export function MonitoringCredentialsForm() {
   const [testResult, setTestResult] = useState<
     Record<string, { ok: boolean; message: string } | null>
   >({});
+  /** 初期表示では入力欄を DOM に出さない（ブラウザがサイトログインを誤自動入力しないようにする） */
+  const [credentialFieldsOpen, setCredentialFieldsOpen] = useState<
+    Record<string, boolean>
+  >({});
+  /** 開くたびに増やして入力欄をマウントし直す */
+  const [credentialFieldMountGen, setCredentialFieldMountGen] = useState<
+    Record<string, number>
+  >({});
+  /** ユーザーが監視サイト欄を編集したら、遅延ストリップで消さない */
+  const userEditedCredRef = useRef(false);
+  /** Chrome 等: text + -webkit-text-security でパスワード型の自動入力を避ける。未対応ブラウザは type=password */
+  const [secretFieldKind, setSecretFieldKind] = useState<"disc-text" | "password">(
+    "password"
+  );
+
+  useEffect(() => {
+    if (
+      typeof CSS !== "undefined" &&
+      CSS.supports("-webkit-text-security", "disc")
+    ) {
+      setSecretFieldKind("disc-text");
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +97,44 @@ export function MonitoringCredentialsForm() {
     };
   }, [targets]);
 
+  useLayoutEffect(() => {
+    const openIds = Object.keys(credentialFieldsOpen).filter(
+      (k) => credentialFieldsOpen[k]
+    );
+    if (openIds.length === 0) return;
+
+    const stripAutofill = () => {
+      if (userEditedCredRef.current) return;
+      setRows((prev) => {
+        let next = { ...prev };
+        let changed = false;
+        for (const id of openIds) {
+          const r = next[id];
+          if (!r) continue;
+          const wantLogin = r.savedLoginId ?? "";
+          if (r.loginId !== wantLogin || r.password !== "") {
+            next[id] = { ...r, loginId: wantLogin, password: "" };
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    };
+
+    const h0 = requestAnimationFrame(() => {
+      requestAnimationFrame(stripAutofill);
+    });
+    const h1 = setTimeout(stripAutofill, 80);
+    const h2 = setTimeout(stripAutofill, 220);
+    const h3 = setTimeout(stripAutofill, 500);
+    return () => {
+      cancelAnimationFrame(h0);
+      clearTimeout(h1);
+      clearTimeout(h2);
+      clearTimeout(h3);
+    };
+  }, [credentialFieldMountGen, credentialFieldsOpen]);
+
   async function saveOne(systemId: string) {
     setOk(null);
     setError(null);
@@ -97,6 +165,7 @@ export function MonitoringCredentialsForm() {
           savedAt: updated.updatedAt,
         },
       }));
+      setCredentialFieldsOpen((prev) => ({ ...prev, [systemId]: false }));
       setOk("保存しました。");
     } catch {
       setError("ネットワークエラーが発生しました。");
@@ -138,6 +207,35 @@ export function MonitoringCredentialsForm() {
     } finally {
       setTestLoading(null);
     }
+  }
+
+  function openCredentialFields(systemId: string) {
+    userEditedCredRef.current = false;
+    setCredentialFieldMountGen((prev) => ({
+      ...prev,
+      [systemId]: (prev[systemId] ?? 0) + 1,
+    }));
+    setCredentialFieldsOpen((prev) => ({ ...prev, [systemId]: true }));
+    setRows((prev) => {
+      const r = prev[systemId];
+      if (!r) return prev;
+      return {
+        ...prev,
+        [systemId]: {
+          ...r,
+          loginId: r.savedLoginId ?? "",
+          password: "",
+        },
+      };
+    });
+  }
+
+  function closeCredentialFields(systemId: string) {
+    setCredentialFieldsOpen((prev) => ({ ...prev, [systemId]: false }));
+    setRows((prev) => ({
+      ...prev,
+      [systemId]: { ...prev[systemId], password: "" },
+    }));
   }
 
   if (loading) {
@@ -216,6 +314,8 @@ export function MonitoringCredentialsForm() {
     >
       <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#64748b", lineHeight: 1.6 }}>
         パスワードは暗号化して保存します。保存後は復号して画面表示しません（再入力で上書き更新します）。
+        <br />
+        各カードの「監視サイトの ID・パスワードを入力」から入力欄を開いてください（ブラウザの自動入力ミスを防ぐため、最初から欄は表示しません）。
       </p>
 
       {error && (
@@ -258,7 +358,7 @@ export function MonitoringCredentialsForm() {
                     <div className="text-[10px] text-slate-500" style={{ fontSize: "12px", color: "#64748b" }}>{saved}</div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => testConnection(t!.systemId)}
@@ -267,15 +367,6 @@ export function MonitoringCredentialsForm() {
                       style={secondaryBtnStyle}
                     >
                       {testLoading === t!.systemId ? "テスト中..." : "接続テスト"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => saveOne(t!.systemId)}
-                      disabled={saving === t!.systemId}
-                      className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-400 disabled:opacity-60"
-                      style={primaryBtnStyle}
-                    >
-                      {saving === t!.systemId ? "保存中..." : "保存"}
                     </button>
                   </div>
 
@@ -300,41 +391,139 @@ export function MonitoringCredentialsForm() {
                     );
                   })()}
 
-                  <div className="settings-credential-fields">
-                    <div className="space-y-1" style={{ minWidth: 0 }}>
-                      <label className="text-xs font-medium text-slate-200">
-                        ログインID
-                      </label>
-                      <input
-                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
-                        style={inputStyle}
-                        value={row.loginId}
-                        onChange={(e) =>
-                          setRows((prev) => ({
-                            ...prev,
-                            [t!.systemId]: { ...prev[t!.systemId], loginId: e.target.value },
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1" style={{ minWidth: 0 }}>
-                      <label className="text-xs font-medium text-slate-200">
-                        パスワード（上書き保存）
-                      </label>
-                      <input
-                        type="password"
-                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
-                        style={inputStyle}
-                        value={row.password}
-                        onChange={(e) =>
-                          setRows((prev) => ({
-                            ...prev,
-                            [t!.systemId]: { ...prev[t!.systemId], password: e.target.value },
-                          }))
-                        }
-                      />
-                    </div>
-                  </div>
+                  {!credentialFieldsOpen[t!.systemId] ? (
+                    <button
+                      type="button"
+                      onClick={() => openCredentialFields(t!.systemId)}
+                      className="w-full rounded-md border border-slate-600 bg-slate-100 px-3 py-2 text-left text-xs font-bold text-slate-800 hover:bg-slate-200"
+                      style={{
+                        ...secondaryBtnStyle,
+                        width: "100%",
+                        textAlign: "center" as const,
+                        fontWeight: 700,
+                      }}
+                    >
+                      監視サイトの ID・パスワードを入力
+                    </button>
+                  ) : (
+                    <>
+                      <form
+                        key={`cred-${t!.systemId}-${credentialFieldMountGen[t!.systemId] ?? 0}-${autofillFieldKey}`}
+                        className="settings-credential-fields"
+                        autoComplete="off"
+                        onSubmit={(e) => e.preventDefault()}
+                      >
+                        <div className="space-y-1" style={{ minWidth: 0 }}>
+                          <label
+                            className="text-xs font-medium text-slate-200"
+                            htmlFor={`monitor-cred-${t!.systemId}-login`}
+                          >
+                            ログインID
+                          </label>
+                          <input
+                            id={`monitor-cred-${t!.systemId}-login`}
+                            name={`mon-${autofillFieldKey}-${t!.systemId}-login`}
+                            type="text"
+                            inputMode="text"
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            spellCheck={false}
+                            data-lpignore="true"
+                            data-1p-ignore="true"
+                            data-bwignore
+                            className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
+                            style={inputStyle}
+                            value={row.loginId}
+                            autoComplete="off"
+                            onChange={(e) => {
+                              userEditedCredRef.current = true;
+                              setRows((prev) => ({
+                                ...prev,
+                                [t!.systemId]: {
+                                  ...prev[t!.systemId],
+                                  loginId: e.target.value,
+                                },
+                              }));
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1" style={{ minWidth: 0 }}>
+                          <label
+                            className="text-xs font-medium text-slate-200"
+                            htmlFor={`monitor-cred-${t!.systemId}-password`}
+                          >
+                            パスワード（上書き保存）
+                          </label>
+                          {secretFieldKind === "disc-text" ? (
+                            <input
+                              id={`monitor-cred-${t!.systemId}-password`}
+                              name={`mon-${autofillFieldKey}-${t!.systemId}-secret`}
+                              type="text"
+                              className="monitoring-secret-input w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
+                              style={inputStyle}
+                              value={row.password}
+                              autoComplete="off"
+                              data-lpignore="true"
+                              data-1p-ignore="true"
+                              data-bwignore
+                              onChange={(e) => {
+                                userEditedCredRef.current = true;
+                                setRows((prev) => ({
+                                  ...prev,
+                                  [t!.systemId]: {
+                                    ...prev[t!.systemId],
+                                    password: e.target.value,
+                                  },
+                                }));
+                              }}
+                            />
+                          ) : (
+                            <input
+                              id={`monitor-cred-${t!.systemId}-password`}
+                              name={`mon-${autofillFieldKey}-${t!.systemId}-secret`}
+                              type="password"
+                              data-lpignore="true"
+                              data-1p-ignore="true"
+                              data-bwignore
+                              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-sky-500"
+                              style={inputStyle}
+                              value={row.password}
+                              autoComplete="new-password"
+                              onChange={(e) => {
+                                userEditedCredRef.current = true;
+                                setRows((prev) => ({
+                                  ...prev,
+                                  [t!.systemId]: {
+                                    ...prev[t!.systemId],
+                                    password: e.target.value,
+                                  },
+                                }));
+                              }}
+                            />
+                          )}
+                        </div>
+                      </form>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => saveOne(t!.systemId)}
+                          disabled={saving === t!.systemId}
+                          className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-400 disabled:opacity-60"
+                          style={primaryBtnStyle}
+                        >
+                          {saving === t!.systemId ? "保存中..." : "保存"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => closeCredentialFields(t!.systemId)}
+                          className="rounded-md border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+                          style={secondaryBtnStyle}
+                        >
+                          入力欄を閉じる
+                        </button>
+                      </div>
+                    </>
+                  )}
             </div>
           );
         })}
