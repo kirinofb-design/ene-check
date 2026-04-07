@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -124,7 +124,7 @@ model CustomFormat {
   siteId           String?
   isActive         Boolean  @default(true)
   // パース用のカスタム設定（例: dateKeys, generationKeys など）
-  // SQLite では Json 型が使えないため JSON文字列として保持
+  // JSON 設定を文字列で保持
   config           String
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
