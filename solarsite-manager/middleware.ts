@@ -1,11 +1,15 @@
-import { NextResponse } from "next/server";
+import {
+  NextResponse,
+  type NextRequest,
+  type NextFetchEvent,
+  type NextMiddleware,
+} from "next/server";
 import NextAuth from "next-auth";
 import { authConfig } from "@/auth.config";
 
 const { auth } = NextAuth(authConfig);
 
 function createRequestId() {
-  // セキュアなIDでなくても相関IDとして十分（ログ/問い合わせ用途）
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -19,18 +23,9 @@ const protectedRoutes = [
   "/settings",
 ];
 
-export default auth((req) => {
+/** auth() ラッパー内より前に /api/auth/error を処理しないと Edge 上で 500 になりうる */
+const withAuth = auth((req) => {
   const { nextUrl } = req;
-
-  // NextAuth の既定 /api/auth/error は本番で 500 になることがある → /login へ（app/api/auth/error は Next の error 規約と衝突しうるのでミドルウェアで処理）
-  if (nextUrl.pathname === "/api/auth/error") {
-    const login = new URL("/login", nextUrl.origin);
-    nextUrl.searchParams.forEach((value, key) => {
-      login.searchParams.set(key, value);
-    });
-    return NextResponse.redirect(login);
-  }
-
   const isLoggedIn = !!req.auth;
   const isAuthPage =
     nextUrl.pathname === "/login" ||
@@ -61,11 +56,21 @@ export default auth((req) => {
   return res;
 });
 
-// ほかの /api/auth/* は通さない（Edge と NextAuth の二重処理で 500 になりうる）。/api/auth/error だけ例外でリダイレクトする。
+export default function middleware(request: NextRequest, event: NextFetchEvent) {
+  if (request.nextUrl.pathname === "/api/auth/error") {
+    const login = new URL("/login", request.nextUrl.origin);
+    request.nextUrl.searchParams.forEach((value, key) => {
+      login.searchParams.set(key, value);
+    });
+    return NextResponse.redirect(login);
+  }
+  return (withAuth as unknown as NextMiddleware)(request, event);
+}
+
+// ほかの /api/auth/* は通さない。/api/auth/error だけ上でリダイレクトする。
 export const config = {
   matcher: [
     "/api/auth/error",
     "/((?!api/health|api/auth|_next/static|_next/image|favicon.ico).*)",
   ],
 };
-
