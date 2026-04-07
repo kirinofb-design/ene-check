@@ -1,8 +1,6 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { authConfig } from "@/auth.config";
-import { prisma } from "@/lib/prisma";
-import { verifyPassword } from "@/lib/auth";
 
 // `secret` をここで渡さない（空文字がビルドに埋め込まれると MissingSecret になるため）。
 // next-auth が setEnvDefaults で AUTH_SECRET / NEXTAUTH_SECRET を読む。
@@ -40,6 +38,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           if (!isValidFormat) {
             return null;
           }
+
+          const [{ prisma }, { verifyPassword }] = await Promise.all([
+            import("@/lib/prisma"),
+            import("@/lib/auth"),
+          ]);
 
           const user = await prisma.user.findUnique({
             where: { email: emailNorm },
