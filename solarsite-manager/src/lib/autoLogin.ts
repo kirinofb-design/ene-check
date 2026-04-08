@@ -49,7 +49,11 @@ async function getCredential(userId: string, systemId: SystemId) {
 async function importPlaywright() {
   // 依存が未インストールでもビルドが壊れないよう遅延 import
   // 実行時に playwright が無いとエラーになります
-  return await import("playwright");
+  try {
+    return await import("playwright");
+  } catch {
+    return await import("playwright-core");
+  }
 }
 
 async function tryFill(page: any, selector: string, value: string) {
@@ -454,10 +458,23 @@ export async function autoLogin(
 
   let browser: Awaited<ReturnType<typeof pw.chromium.launch>>;
   try {
-    browser = await pw.chromium.launch({
-      headless: opts.headless ?? true,
-      slowMo: opts.slowMoMs,
-    });
+    const onVercel = process.env.VERCEL === "1" || process.env.VERCEL === "true";
+    if (onVercel) {
+      const chromiumMod = await import("@sparticuz/chromium");
+      const chromium = chromiumMod.default ?? chromiumMod;
+      const executablePath = await chromium.executablePath();
+      browser = await pw.chromium.launch({
+        executablePath,
+        args: chromium.args,
+        headless: true,
+        slowMo: opts.slowMoMs,
+      });
+    } else {
+      browser = await pw.chromium.launch({
+        headless: opts.headless ?? true,
+        slowMo: opts.slowMoMs,
+      });
+    }
   } catch (e) {
     logger.error("autoLogin chromium launch failed", { extra: { systemId }, userId }, e);
     return {
