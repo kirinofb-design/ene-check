@@ -165,7 +165,7 @@ export function MonitoringCredentialsForm() {
           savedAt: updated.updatedAt,
         },
       }));
-      setCredentialFieldsOpen((prev) => ({ ...prev, [systemId]: false }));
+      // 保存後も入力欄は開いたままにし、続けて修正/再保存できるようにする
       setOk("保存しました。");
     } catch {
       setError("ネットワークエラーが発生しました。");

@@ -439,7 +439,19 @@ export async function autoLogin(
     };
   }
 
-  const pw = await importPlaywright();
+  let pw: Awaited<ReturnType<typeof importPlaywright>>;
+  try {
+    pw = await importPlaywright();
+  } catch (e) {
+    logger.error("autoLogin playwright import failed", { extra: { systemId }, userId }, e);
+    return {
+      systemId,
+      ok: false,
+      message:
+        "接続テスト実行環境の初期化に失敗しました（playwright の読み込みに失敗）。",
+    };
+  }
+
   const browser = await pw.chromium.launch({
     headless: opts.headless ?? true,
     slowMo: opts.slowMoMs,
