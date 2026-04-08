@@ -18,6 +18,7 @@ type RowState = {
   savedLoginId?: string;
   savedAt?: string;
 };
+const CRED_FIELDS_OPEN_STORAGE_KEY = "monitoring-credential-fields-open";
 
 export function MonitoringCredentialsForm() {
   const targets = useMemo(() => MONITORING_AUTH_TARGETS, []);
@@ -60,6 +61,34 @@ export function MonitoringCredentialsForm() {
       setSecretFieldKind("disc-text");
     }
   }, []);
+
+  function persistOpenState(next: Record<string, boolean>) {
+    try {
+      const onlyTrue = Object.fromEntries(
+        Object.entries(next).filter(([, v]) => v === true)
+      );
+      localStorage.setItem(CRED_FIELDS_OPEN_STORAGE_KEY, JSON.stringify(onlyTrue));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CRED_FIELDS_OPEN_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, boolean>;
+      const restored: Record<string, boolean> = {};
+      for (const t of targets) {
+        if (parsed[t.systemId] === true) restored[t.systemId] = true;
+      }
+      if (Object.keys(restored).length > 0) {
+        setCredentialFieldsOpen((prev) => ({ ...prev, ...restored }));
+      }
+    } catch {
+      // ignore parse/storage errors
+    }
+  }, [targets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,7 +244,11 @@ export function MonitoringCredentialsForm() {
       ...prev,
       [systemId]: (prev[systemId] ?? 0) + 1,
     }));
-    setCredentialFieldsOpen((prev) => ({ ...prev, [systemId]: true }));
+    setCredentialFieldsOpen((prev) => {
+      const next = { ...prev, [systemId]: true };
+      persistOpenState(next);
+      return next;
+    });
     setRows((prev) => {
       const r = prev[systemId];
       if (!r) return prev;
@@ -231,7 +264,11 @@ export function MonitoringCredentialsForm() {
   }
 
   function closeCredentialFields(systemId: string) {
-    setCredentialFieldsOpen((prev) => ({ ...prev, [systemId]: false }));
+    setCredentialFieldsOpen((prev) => {
+      const next = { ...prev, [systemId]: false };
+      persistOpenState(next);
+      return next;
+    });
     setRows((prev) => ({
       ...prev,
       [systemId]: { ...prev[systemId], password: "" },

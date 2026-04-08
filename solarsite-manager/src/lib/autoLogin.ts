@@ -452,10 +452,21 @@ export async function autoLogin(
     };
   }
 
-  const browser = await pw.chromium.launch({
-    headless: opts.headless ?? true,
-    slowMo: opts.slowMoMs,
-  });
+  let browser: Awaited<ReturnType<typeof pw.chromium.launch>>;
+  try {
+    browser = await pw.chromium.launch({
+      headless: opts.headless ?? true,
+      slowMo: opts.slowMoMs,
+    });
+  } catch (e) {
+    logger.error("autoLogin chromium launch failed", { extra: { systemId }, userId }, e);
+    return {
+      systemId,
+      ok: false,
+      message:
+        "接続テスト実行環境の起動に失敗しました（Chromium の起動に失敗）。",
+    };
+  }
 
   try {
     const context = await browser.newContext();
