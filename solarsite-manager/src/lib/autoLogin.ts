@@ -473,11 +473,14 @@ export async function autoLogin(
     }
   } catch (e) {
     logger.error("autoLogin chromium launch failed", { extra: { systemId }, userId }, e);
+    const detail =
+      e instanceof Error && typeof e.message === "string"
+        ? e.message.replace(/\s+/g, " ").slice(0, 240)
+        : "unknown";
     return {
       systemId,
       ok: false,
-      message:
-        "接続テスト実行環境の起動に失敗しました（Chromium の起動に失敗）。",
+      message: `接続テスト実行環境の起動に失敗しました（Chromium の起動に失敗: ${detail}）。`,
     };
   }
 
