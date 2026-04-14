@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 
 const SMA_COOKIE_MISSING_ERROR = "SMA Cookie が未登録または期限切れです。/settings から Cookie を登録してください。";
+const SUNNY_PORTAL_SILENT_LOGIN_URL =
+  "https://login.sma.energy/auth/realms/SMA/protocol/openid-connect/auth?client_id=SunnyPortalClassic&client_secret=baa6d5fe-f905-4fb2-bc8e-8f218acc2835&prompt=none&redirect_uri=https%3A%2F%2Fwww.sunnyportal.com%2FTemplates%2FStart.aspx%3FSilentLogin%3Dtrue&response_type=code&ui_locales=ja";
 
 const SMA_STATIONS = [
   {
@@ -17,6 +19,14 @@ const SMA_STATIONS = [
 ];
 
 type SmaTableCellRow = string[];
+type SmaPortalCookie = {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  httpOnly?: boolean;
+  secure?: boolean;
+};
 
 function parseYmdToUtcDate(ymd: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
@@ -136,7 +146,8 @@ async function gotoNetworkIdle(page: any, url: string, timeoutMs?: number) {
 export async function runSmaCollectorCookie(
   userId: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  runtimeCookieJson?: string
 ): Promise<{ ok: boolean; message: string; recordCount: number; errorCount: number }> {
   const start = parseYmdToUtcDate(startDate);
   const end = parseYmdToUtcDate(endDate);
@@ -144,27 +155,38 @@ export async function runSmaCollectorCookie(
 
   let recordCount = 0;
 
-  const cookieRow = await prisma.smaCookieCache.findFirst({
-    where: { userId, expiresAt: { gt: new Date() } },
-    select: { cookieJson: true, expiresAt: true },
-  });
-  if (!cookieRow) {
-    return { ok: false, message: SMA_COOKIE_MISSING_ERROR, recordCount: 0, errorCount: 0 };
+  let cookieJsonSource: string | null = null;
+  if (typeof runtimeCookieJson === "string" && runtimeCookieJson.trim().length > 0) {
+    cookieJsonSource = runtimeCookieJson;
+    logger.info("smaCollector: using runtime cookie json from auto login", {
+      userId,
+      extra: { cookieJsonHead: runtimeCookieJson.substring(0, 200) },
+    });
+  } else {
+    const cookieRow = await prisma.smaCookieCache.findFirst({
+      where: { userId, expiresAt: { gt: new Date() } },
+      select: { cookieJson: true, expiresAt: true },
+    });
+    if (!cookieRow) {
+      return { ok: false, message: SMA_COOKIE_MISSING_ERROR, recordCount: 0, errorCount: 0 };
+    }
+    cookieJsonSource = cookieRow.cookieJson;
+    logger.info("smaCollector: loaded cookie json from cache", {
+      userId,
+      extra: {
+        cookieJson: cookieRow.cookieJson.substring(0, 200),
+      },
+    });
   }
-  logger.info("smaCollector: loaded cookie json", {
-    userId,
-    extra: {
-      cookieJson: cookieRow.cookieJson.substring(0, 200),
-    },
-  });
 
+  const cookieJsonRaw = cookieJsonSource ?? "";
   const parsedCookies = (() => {
     try {
-      const parsed = JSON.parse(cookieRow.cookieJson) as any;
+      const parsed = JSON.parse(cookieJsonRaw) as any;
       if (Array.isArray(parsed)) {
         return parsed
-          .filter((x: any) => typeof x?.name === "string" && typeof x?.value === "string")
-          .map((x: any) => ({
+          .filter((x: SmaPortalCookie) => typeof x?.name === "string" && typeof x?.value === "string")
+          .map((x: SmaPortalCookie) => ({
             name: x.name,
             value: x.value,
             domain: typeof x.domain === "string" && x.domain.length > 0 ? x.domain : "www.sunnyportal.com",
@@ -196,20 +218,27 @@ export async function runSmaCollectorCookie(
     return { ok: false, message: "SMA Cookie が不正です。再登録してください。", recordCount: 0, errorCount: 0 };
   }
 
+  const hasRuntimeCookies =
+    typeof runtimeCookieJson === "string" && runtimeCookieJson.trim().length > 0;
   const formsLoginOnly = parsedCookies.filter(
     (c) => c.name === ".SunnyPortalFormsLogin" || c.name === "SunnyPortalFormsLogin"
   );
   const portalCookies = parsedCookies.filter((c) => /sunnyportal\.com/i.test(c.domain ?? ""));
   const hasFormsInPortal = portalCookies.some((c) => /SunnyPortalFormsLogin/i.test(c.name));
   // 複数 Cookie を登録済みなら sunnyportal 向けをまとめて注入（セッション維持に有効）
-  const cookiesToInject =
-    portalCookies.length >= 2 && hasFormsInPortal ? portalCookies : formsLoginOnly;
+  const cookiesToInject = hasRuntimeCookies
+    ? parsedCookies
+    : portalCookies.length >= 2 && hasFormsInPortal
+      ? portalCookies
+      : formsLoginOnly;
 
   if (cookiesToInject.length === 0) {
     return {
       ok: false,
       message:
-        ".SunnyPortalFormsLogin が見つかりません。設定で value のみ、または Chrome の Cookie 配列（JSON）を登録してください。",
+        hasRuntimeCookies
+          ? "SMA自動ログイン後に有効なSunny Portal Cookieを取得できませんでした。/settings でSMAログイン情報を再保存して再実行してください。"
+          : ".SunnyPortalFormsLogin が見つかりません。設定で value のみ、または Chrome の Cookie 配列（JSON）を登録してください。",
       recordCount: 0,
       errorCount: 0,
     };
@@ -283,6 +312,20 @@ export async function runSmaCollectorCookie(
       await page.setCookie(...cookiesForPuppeteer);
     }
 
+    const isAuthenticatedAtPlants = async () => {
+      const plantsTitle = await page.title().catch(() => "");
+      const plantsUrl = page.url();
+      const isAuthenticated =
+        plantsTitle.includes("一覧") ||
+        plantsTitle.includes("List") ||
+        (plantsUrl.includes("/Plants") && !plantsUrl.includes("Start.aspx"));
+      logger.info("smaCollector: /Plants auth check", {
+        userId,
+        extra: { title: plantsTitle, url: plantsUrl, isAuthenticated },
+      });
+      return isAuthenticated;
+    };
+
     await gotoNetworkIdle(page, "https://www.sunnyportal.com/Plants");
     const currentCookies = await page.cookies();
     const documentCookieAtPlants = (await page.evaluate(() => document.cookie).catch(() => "")) as string;
@@ -316,16 +359,15 @@ export async function runSmaCollectorCookie(
       extra: { count: redirectLinksOnPlants.length, links: redirectLinksOnPlants },
     });
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const plantsTitle = await page.title().catch(() => "");
-    const plantsUrl = page.url();
-    const isAuthenticated =
-      plantsTitle.includes("一覧") ||
-      plantsTitle.includes("List") ||
-      (plantsUrl.includes("/Plants") && !plantsUrl.includes("Start.aspx"));
-    logger.info("smaCollector: /Plants auth check", {
-      userId,
-      extra: { title: plantsTitle, url: plantsUrl, isAuthenticated },
-    });
+    let isAuthenticated = await isAuthenticatedAtPlants();
+    if (!isAuthenticated && hasRuntimeCookies) {
+      logger.info("smaCollector: trying silent SSO login for runtime cookies", { userId });
+      await gotoNetworkIdle(page, SUNNY_PORTAL_SILENT_LOGIN_URL, 30000).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await gotoNetworkIdle(page, "https://www.sunnyportal.com/Plants", 30000).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      isAuthenticated = await isAuthenticatedAtPlants();
+    }
     if (!isAuthenticated) {
       return {
         ok: false,

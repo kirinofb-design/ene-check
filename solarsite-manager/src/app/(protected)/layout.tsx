@@ -49,7 +49,7 @@ export default async function ProtectedLayout({
               ログアウト
             </button>
           </form>
-          <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", textAlign: "right" }}>
+          <span style={{ fontSize: "13px", fontWeight: 700, color: "#cbd5e1", textAlign: "right" }}>
             ログインID：{session?.user?.email ?? "-"}
           </span>
         </div>

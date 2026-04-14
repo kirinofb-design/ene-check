@@ -10,7 +10,7 @@ export default async function SettingsPage() {
     paddingTop: "10px",
     display: "flex",
     flexDirection: "column" as const,
-    gap: "6px",
+    gap: 0,
   };
   const sectionStyle = {
     width: "100%",
@@ -40,15 +40,20 @@ export default async function SettingsPage() {
   };
   const pageTitleStyle = {
     margin: 0,
+    marginBottom: "8px",
     fontSize: "30px",
     lineHeight: 1.2,
     fontWeight: 800,
-    color: "#0f172a",
     letterSpacing: "-0.02em",
   };
 
+  const secondSectionStyle = {
+    ...sectionStyle,
+    marginTop: "24px",
+  };
+
   return (
-    <div className="space-y-6" style={pageWrapStyle}>
+    <div style={pageWrapStyle}>
       <h1 style={pageTitleStyle}>設定</h1>
 
       <section className="space-y-3" style={sectionStyle}>
@@ -58,8 +63,8 @@ export default async function SettingsPage() {
         <MonitoringCredentialsForm />
       </section>
 
-      <section className="space-y-3" style={sectionStyle}>
-        <h2 style={sectionMainTitleStyle}>SMA Cookie 登録（自動収集 Step 2）</h2>
+      <section className="space-y-3" style={secondSectionStyle}>
+        <h2 style={sectionMainTitleStyle}>SMA Cookie 登録（任意・フォールバック用）</h2>
         <SmaCookieForm />
       </section>
 

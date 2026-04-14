@@ -1,6 +1,6 @@
 # 開発状況（PROGRESS）
 
-最終更新: 2026-04-06
+最終更新: 2026-04-14
 
 ## プロジェクト概要
 solarsite-manager: 太陽光発電監視システム統合（Next.js 14 + Prisma + NextAuth + Playwright / Puppeteer）
@@ -16,6 +16,10 @@ solarsite-manager: 太陽光発電監視システム統合（Next.js 14 + Prisma
   - `/login`: `useSearchParams` を `Suspense` でラップ
   - NextAuth（`src/auth.ts`）: `trustHost: true`、`pages.signIn` / `pages.error` → `/login`（既定 `/api/auth/error` の真っ白回避）
   - その他: Prisma トランザクション型、`logger` / コレクター周りの型、到達不能だった旧 SMA Puppeteer 本体の削除（`runSmaCollector` は `smaCollectorCookie` のみ）
+- **接続テスト関連（2026-04 追加）**
+  - `next.config.mjs`: `experimental.serverComponentsExternalPackages` に `playwright-core` と `@sparticuz/chromium` を追加
+  - `next.config.mjs`: `outputFileTracingIncludes` は **`experimental.outputFileTracingIncludes`** 配下に配置（Next 14.2.35 の警告回避）
+  - `src/lib/autoLogin.ts`: `playwright-core` + `@sparticuz/chromium` で実行、Chromium 起動失敗時のエラー詳細を返すよう改善
 
 ---
 
@@ -53,19 +57,26 @@ solarsite-manager: 太陽光発電監視システム統合（Next.js 14 + Prisma
 ## UI・API
 - データ収集: `src/components/reports/DataCollectSection.tsx`（システム別 API へ振り分け、`/api/collect/all` あり）
 - Excel: `GET /api/reports/export-excel?month=YYYY-MM`
-- レポート・設定まわりの UI 調整は随時反映済み
+- レポート・設定まわりの UI 調整を反映
+  - タイトル文字色（ダーク背景での可読性）を統一
+  - 「設定」「レポート」ナビボタンの文字位置・高さを統一
+  - ボタン行→ページタイトル→カードの余白バランスを揃え、ページ間の見え方を統一
+- ログイン運用メモ
+  - ローカルで `DATABASE_URL` が未設定/不正だと、`/api/auth/signup` と `/api/auth/callback/credentials` が Prisma 初期化エラーで失敗
+  - `.env.local`（`DATABASE_URL` / `NEXTAUTH_SECRET` / `NEXTAUTH_URL` / `CREDENTIALS_ENCRYPTION_KEY`）設定後、`npm run dev` 再起動で復旧
 
 ---
 
 ## 次のタスク（優先順）
-1. **Vercel 本番の DB**: SQLite から **PostgreSQL（Neon 等）** へ移行し、`DATABASE_URL`・マイグレーション運用を決める
-2. **本番環境変数**: `NEXTAUTH_SECRET`、`NEXTAUTH_URL`（本番 URL）、`CREDENTIALS_ENCRYPTION_KEY` 等を Vercel に設定・再デプロイ
-3. Solar Monitor SF の日別欠損（例: 25・26 日）の調査
-4. 重い収集処理の **Vercel 外実行**（タイムアウト対策）の要否判断
+1. Solar Monitor SF の日別欠損（例: 25・26 日）の調査
+2. 重い収集処理の **Vercel 外実行**（タイムアウト対策）の要否判断
+3. ログイン画面の「テスト用ユーザー」表記の扱い整理（接続先 DB 依存のため注記 or 削除）
+4. `README.md` の環境説明を現状運用（PostgreSQL 前提）に追随させる
 
 ---
 
 ## DB・環境メモ
-- ローカル: SQLite（Prisma `file:./dev.db`）
+- ローカル: PostgreSQL（Neon など）の `DATABASE_URL` を `.env.local` に設定して運用
+- `NEXTAUTH_URL`（例: `http://localhost:3000`）未設定時はヘルスチェックが `ok: false` になりうる
 - 認証情報: `MonitoringCredential` に暗号化保存（`CREDENTIALS_ENCRYPTION_KEY` 必須）
 - 日付: JST → UTC 00:00 で保存

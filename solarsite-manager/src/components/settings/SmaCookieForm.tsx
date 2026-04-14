@@ -149,9 +149,9 @@ export function SmaCookieForm() {
       <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4 space-y-2" style={cardStyle}>
         <div className="flex items-start justify-between gap-3" style={{ minWidth: 0 }}>
           <div className="space-y-1" style={{ minWidth: 0, flex: "1 1 0%" }}>
-            <div className="text-sm font-medium text-slate-200" style={{ fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>SMA Sunny Portal Cookie（Step 2）</div>
+            <div className="text-sm font-medium text-slate-200" style={{ fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>SMA Sunny Portal Cookie（任意）</div>
             <div className="text-xs text-slate-500" style={{ fontSize: "13px", color: "#475569" }}>
-              Cookie を登録すると、/Plants へアクセスしてデータ取得できます。
+              通常は保存済みログイン情報で自動収集します。ここはフォールバック時のみ利用します。
             </div>
             {loading ? null : registered ? (
               <div className="text-xs text-emerald-400">
@@ -172,7 +172,7 @@ export function SmaCookieForm() {
             className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-60"
             style={primaryBtnStyle}
           >
-            SMA Cookie を登録
+            Cookie を手動登録
           </button>
         </div>
       </div>
