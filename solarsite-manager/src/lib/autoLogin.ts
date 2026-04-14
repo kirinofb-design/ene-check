@@ -47,9 +47,9 @@ async function getCredential(userId: string, systemId: SystemId) {
 }
 
 async function importPlaywright() {
-  // 依存が未インストールでもビルドが壊れないよう遅延 import
-  // 実行時に playwright が無いとエラーになります
-  return await import("playwright");
+  // 本番（Vercel）は devDependencies が入らないことがあるため playwright-core を使う
+  // Next の webpack が playwright-core を丸ごとバンドルすると失敗するので next.config で外部化する
+  return await import("playwright-core");
 }
 
 async function tryFill(page: any, selector: string, value: string) {
