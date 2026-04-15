@@ -39,6 +39,29 @@ export function handleApiError(request: Request, err: unknown) {
     return jsonError(401, "UNAUTHORIZED", "ログインが必要です。", requestId);
   }
 
+  // Prisma の DB 到達不可（Neon 断/ネットワーク断）を明示する
+  if (err instanceof Error) {
+    const msg = err.message ?? "";
+    if (
+      /can't reach database server/i.test(msg) ||
+      /P1001/i.test(msg) ||
+      /ECONNREFUSED/i.test(msg) ||
+      /ENOTFOUND/i.test(msg)
+    ) {
+      logger.error("API database unreachable", {
+        requestId,
+        path: pathname,
+        method: request.method,
+      }, err);
+      return jsonError(
+        503,
+        "DATABASE_UNREACHABLE",
+        "データベースに接続できません。時間をおいて再実行してください。",
+        requestId
+      );
+    }
+  }
+
   logger.error("API unhandled error", {
     requestId,
     path: pathname,

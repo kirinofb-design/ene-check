@@ -13,6 +13,37 @@ const LAPLACE_SERVICE_LIST_URL = "https://laplaceid.energymntr.com/servicelist";
 const LAPLACE_DATA_BASE_URL = "https://grandarch.energymntr.com";
 const LAPLACE_DOWNLOAD_URL = `${LAPLACE_DATA_BASE_URL}/download`;
 
+// DBに laplaceCode が未設定でも、既知の発電所名はコード照合できるよう補完する
+const FALLBACK_LAPLACE_CODE_BY_SITE_NAME: Record<string, string> = {
+  "下和田（高圧）": "J-043",
+  "須山②（高圧）": "J-052",
+  "松本②238-1HD（低圧）": "J-058",
+  "長谷（低圧）": "J-051",
+  "落居（笠名高圧）": "J-023",
+  "静谷（高圧）": "J-047",
+  "比木（高圧）": "J-044",
+  "合戸（高圧）": "J-045",
+  "笠名②（高圧）": "J-053",
+  "西方（高圧）": "J-056",
+  "松本242（低圧）": "J-057",
+};
+
+const LAPLACE_FORCED_ZERO_RULES: Array<{
+  siteName: string;
+  from: string; // YYYY-MM-DD
+  to: string; // YYYY-MM-DD
+}> = [
+  // 監視装置停止中のため、当該期間は 0 扱いとする
+  { siteName: "落居（笠名高圧）", from: "2026-04-01", to: "2026-04-14" },
+];
+
+/** 既定はヘッドレス（画面非表示）。調査時のみ LAPLACE_DEBUG_HEADFUL=1 でウィンドウ表示 */
+function isLaplaceDebugHeadfulEnabled(): boolean {
+  if (process.env.LAPLACE_DEBUG_HEADFUL === "1") return true;
+  if (process.env.LAPLACE_DEBUG_HEADFUL === "0") return false;
+  return false;
+}
+
 function isYmd(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
@@ -83,6 +114,31 @@ function normalizeCorruptedLaplaceCodePrefix(s: string): string {
   return s.replace(/^[?\uFF1F]-(\d{2,4})/, "J-$1");
 }
 
+function normalizeLaplaceSiteNameForMatch(s: string): string {
+  return s
+    .normalize("NFKC")
+    .replace(/^[A-Z]-\d{2,4}/i, "")
+    .replace(/[　\s]/g, "")
+    .replace(/\(株\)|（株）|㈱/g, "")
+    .replace(/new$/i, "")
+    .trim()
+    .toLowerCase();
+}
+
+function laplaceNameTokens(s: string): string[] {
+  const normalized = normalizeLaplaceSiteNameForMatch(s)
+    .replace(/太陽光発電所|太陽光|発電所|発電設備|システム|高圧|低圧|特高|第三|第二|第一|本社|株式会社|フジ物産/g, " ")
+    .replace(/[0-9\-]/g, " ")
+    .replace(/[()（）]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return [];
+  return normalized
+    .split(" ")
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+}
+
 function isMissingCsvNumber(raw: string): boolean {
   const t = raw.trim();
   if (!t) return true;
@@ -98,6 +154,15 @@ function parseCsvDateToUtcDate(raw: string): Date | null {
   const d = Number(m[3]);
   if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
   return new Date(Date.UTC(y, mo - 1, d, 0, 0, 0, 0));
+}
+
+function shouldForceLaplaceZero(siteName: string, dateUtc: Date): boolean {
+  const rule = LAPLACE_FORCED_ZERO_RULES.find((r) => r.siteName === siteName);
+  if (!rule) return false;
+  const from = parseYmdToUtcDate(rule.from);
+  const to = parseYmdToUtcDate(rule.to);
+  if (!from || !to) return false;
+  return dateUtc.getTime() >= from.getTime() && dateUtc.getTime() <= to.getTime();
 }
 
 function getMonthsInRange(startDate: Date, endDate: Date): string[] {
@@ -510,11 +575,18 @@ async function parseAndUpsertLaplaceCsv(
   start: Date,
   end: Date
 ): Promise<{ recordCount: number; errorCount: number }> {
-  /** laplaceCode は CSV と突き合わせるため、監視システム種別に関係なく設定済みサイトを対象にする（例: 笠名IC が eco-megane の場合もある） */
+  /** laplaceCode は CSV と突き合わせるため、監視システム種別に関係なく全 Site を対象にする */
   const dbSites = await prisma.site.findMany({
-    where: { laplaceCode: { not: null } },
-    select: { id: true, siteName: true, laplaceCode: true },
+    select: { id: true, siteName: true, laplaceCode: true, monitoringSystem: true },
   });
+  const siteByLaplaceCode = new Map<string, (typeof dbSites)[number]>();
+  for (const s of dbSites) {
+    const code = s.laplaceCode ?? FALLBACK_LAPLACE_CODE_BY_SITE_NAME[s.siteName] ?? null;
+    if (!code) continue;
+    if (!siteByLaplaceCode.has(code)) {
+      siteByLaplaceCode.set(code, s);
+    }
+  }
 
   const allLines = csvText.split(/\r?\n/).filter((l) => l.trim());
   const headerCols = splitCsvLine(allLines[0] ?? "");
@@ -590,19 +662,49 @@ async function parseAndUpsertLaplaceCsv(
 
     if (isMissingCsvNumber(acKwh)) continue;
 
-    const matches = dbSites.filter((s) => s.laplaceCode === laplaceCode);
-    if (matches.length > 1) {
+    const matchByCode = siteByLaplaceCode.get(laplaceCode);
+    const matchesByCode = matchByCode ? [matchByCode] : [];
+    if (matchesByCode.length > 1) {
       console.warn(
         "laplaceCode が複数 Site に重複しています（先頭の Site を使用）:",
         laplaceCode,
-        matches.map((s) => s.siteName)
+        matchesByCode.map((s) => s.siteName)
       );
     }
-    const site = matches[0];
+    let site = matchesByCode[0];
     if (!site) {
-      console.log("site not found for laplaceCode:", laplaceCode);
-      errorCount++;
-      continue;
+      // laplaceCode 未設定のサイト向けフォールバック（CSV発電所名で近似一致）
+      const csvNameNorm = normalizeLaplaceSiteNameForMatch(csvSiteName);
+      const byNameContains = dbSites.find((s) => {
+        const siteNorm = normalizeLaplaceSiteNameForMatch(s.siteName);
+        if (!siteNorm || !csvNameNorm) return false;
+        return csvNameNorm.includes(siteNorm) || siteNorm.includes(csvNameNorm);
+      });
+      const byNameToken =
+        byNameContains ??
+        (() => {
+          const csvTokens = laplaceNameTokens(csvSiteName);
+          if (csvTokens.length === 0) return undefined;
+          let best: { site: (typeof dbSites)[number]; score: number } | null = null;
+          for (const candidate of dbSites) {
+            const siteTokens = laplaceNameTokens(candidate.siteName);
+            if (siteTokens.length === 0) continue;
+            const score = siteTokens.reduce(
+              (sum, token) => (csvTokens.some((ct) => ct.includes(token) || token.includes(ct)) ? sum + 1 : sum),
+              0
+            );
+            if (score <= 0) continue;
+            if (!best || score > best.score) best = { site: candidate, score };
+          }
+          return best?.site;
+        })();
+      if (byNameToken) {
+        site = byNameToken;
+      } else {
+        console.log("site not found for laplaceCode:", laplaceCode);
+        errorCount++;
+        continue;
+      }
     }
 
     const dateUtc = parseCsvDateToUtcDate(dateStr);
@@ -612,11 +714,12 @@ async function parseAndUpsertLaplaceCsv(
     }
     if (dateUtc.getTime() < start.getTime() || dateUtc.getTime() > end.getTime()) continue;
 
-    const generation = parseFloat(acKwh.replace(/,/g, ""));
-    if (Number.isNaN(generation)) {
+    const parsedGeneration = parseFloat(acKwh.replace(/,/g, ""));
+    if (Number.isNaN(parsedGeneration)) {
       errorCount++;
       continue;
     }
+    const generation = shouldForceLaplaceZero(site.siteName, dateUtc) ? 0 : parsedGeneration;
 
     await prisma.dailyGeneration.upsert({
       where: { siteId_date: { siteId: site.id, date: dateUtc } },
@@ -678,8 +781,13 @@ export async function runLaplaceCollector(
   const loginId = cred.loginId;
 
   const pw = await import("playwright");
+  const headful = isLaplaceDebugHeadfulEnabled();
+  logger.info("laplaceCollector: browser launch mode", {
+    userId,
+    extra: { headful, envHeadful: process.env.LAPLACE_DEBUG_HEADFUL ?? null, nodeEnv: process.env.NODE_ENV ?? null },
+  });
   const browser = await pw.chromium.launch({
-    headless: false,
+    headless: !headful,
     args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
   });
   let recordCount = 0;

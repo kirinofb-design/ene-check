@@ -54,6 +54,22 @@ export default function DataCollectSection() {
     return `${head}\n\n──────── システム別（失敗を上に表示）────────\n\n${lines.join("\n\n")}`;
   };
 
+  const resolveApiMessage = (data: unknown, fallback: string): string => {
+    if (data && typeof data === "object") {
+      const d = data as {
+        message?: unknown;
+        error?: { message?: unknown };
+      };
+      if (typeof d.message === "string" && d.message.trim().length > 0) {
+        return d.message;
+      }
+      if (typeof d.error?.message === "string" && d.error.message.trim().length > 0) {
+        return d.error.message;
+      }
+    }
+    return fallback;
+  };
+
   const handleCollect = async (systemName: string) => {
     setLoading(systemName);
     try {
@@ -74,10 +90,14 @@ export default function DataCollectSection() {
         return;
       }
 
+      const message = resolveApiMessage(
+        data,
+        response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`
+      );
       if (data.ok) {
-        alert(`${systemName}: ${data.message}`);
+        alert(`${systemName}: ${message}`);
       } else {
-        alert(`${systemName}のエラー: ${data.message}`);
+        alert(`${systemName}のエラー: ${message}`);
       }
     } catch (error) {
       alert(`${systemName}の通信に失敗しました`);
@@ -194,6 +214,9 @@ export default function DataCollectSection() {
           >
             {loading === 'all' ? "取得中..." : "全データ一括取得"}
           </button>
+          <p style={{ fontSize: '11px', color: '#64748b', marginTop: '10px', lineHeight: 1.5, marginBottom: 0 }}>
+            6システムを同時に実行します（完了までの時間は、もっとも遅い処理にほぼ一致します）。
+          </p>
         </div>
       </div>
     </div>

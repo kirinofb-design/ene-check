@@ -68,6 +68,10 @@ function normalizeName(s: string): string {
   return s.normalize("NFKC").replace(/\s+/g, "").trim();
 }
 
+function normalizeMonitoringSystemId(v: string | null | undefined): string {
+  return (v ?? "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
 
 export async function runSolarMonitorCollector(
   userId: string,
@@ -97,14 +101,16 @@ export async function runSolarMonitorCollector(
     const loginId = cred.loginId.trim();
     const password = decryptSecret(cred.encryptedPassword).trim();
 
-    const sites = await prisma.site.findMany({
-      where: { monitoringSystem: "solar-monitor" },
-      select: { id: true, siteName: true },
+    const allSites = await prisma.site.findMany({
+      select: { id: true, siteName: true, monitoringSystem: true },
     });
+    // 既存DBには "solar-monitor" / "solar-monitor-sf" / "solar-monitor-se" が混在しうる
+    const sites = allSites.filter((s) => normalizeMonitoringSystemId(s.monitoringSystem).includes("solar-monitor"));
 
     const siteByPlant = new Map<string, { id: string; siteName: string }>();
     for (const plant of cfg.targetPlants) {
-      const hit = sites.find((s) => normalizeName(s.siteName).includes(normalizeName(plant.siteKeyword)));
+      const hitPool = sites.length > 0 ? sites : allSites;
+      const hit = hitPool.find((s) => normalizeName(s.siteName).includes(normalizeName(plant.siteKeyword)));
       if (!hit) {
         logger.warn("solarMonitorCollector: site not found", { extra: { plant: plant.optionText } });
         continue;

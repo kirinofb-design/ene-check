@@ -1,5 +1,4 @@
 import { MonitoringCredentialsForm } from "@/components/settings/MonitoringCredentialsForm";
-import { SmaCookieForm } from "@/components/settings/SmaCookieForm";
 
 export default async function SettingsPage() {
   const pageWrapStyle = {
@@ -47,11 +46,6 @@ export default async function SettingsPage() {
     letterSpacing: "-0.02em",
   };
 
-  const secondSectionStyle = {
-    ...sectionStyle,
-    marginTop: "24px",
-  };
-
   return (
     <div style={pageWrapStyle}>
       <h1 style={pageTitleStyle}>設定</h1>
@@ -61,11 +55,6 @@ export default async function SettingsPage() {
           監視サイトログイン情報（自動収集 Step 1）
         </h2>
         <MonitoringCredentialsForm />
-      </section>
-
-      <section className="space-y-3" style={secondSectionStyle}>
-        <h2 style={sectionMainTitleStyle}>SMA Cookie 登録（任意・フォールバック用）</h2>
-        <SmaCookieForm />
       </section>
 
     </div>

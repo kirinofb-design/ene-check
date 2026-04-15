@@ -44,7 +44,7 @@ export async function runSmaCollector(
     return await runSmaCollectorCookie(userId, startDate, endDate);
   }
 
-  let runtimeCookieJson = "";
+  let runtimeStorageStateJson = "";
   try {
     const parsed = JSON.parse(loginResult.storageStateJson) as {
       cookies?: Array<{
@@ -54,6 +54,8 @@ export async function runSmaCollector(
         path?: string;
         secure?: boolean;
         httpOnly?: boolean;
+        sameSite?: "Strict" | "Lax" | "None";
+        expires?: number;
       }>;
     };
     const cookies = Array.isArray(parsed.cookies) ? parsed.cookies : [];
@@ -64,13 +66,28 @@ export async function runSmaCollector(
         typeof c?.domain === "string" &&
         /sunnyportal\.com|sma\.energy/i.test(c.domain)
     );
-    runtimeCookieJson = JSON.stringify(sunnyPortalCookies);
+    const origins = Array.isArray((parsed as { origins?: unknown[] }).origins)
+      ? ((parsed as { origins?: unknown[] }).origins as unknown[])
+      : [];
+    runtimeStorageStateJson = JSON.stringify({
+      cookies: sunnyPortalCookies.map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+        sameSite: c.sameSite,
+        expires: c.expires,
+      })),
+      origins,
+    });
   } catch (e) {
     logger.warn("smaCollector: storageState parse failed, falling back to saved cookie", { userId }, e);
     return await runSmaCollectorCookie(userId, startDate, endDate);
   }
 
-  if (!runtimeCookieJson || runtimeCookieJson === "[]") {
+  if (!runtimeStorageStateJson || runtimeStorageStateJson === "[]") {
     logger.warn("smaCollector: no sunny portal cookies from autoLogin, falling back to saved cookie", { userId });
     if (!hasFallbackCookie) {
       return {
@@ -84,5 +101,5 @@ export async function runSmaCollector(
     return await runSmaCollectorCookie(userId, startDate, endDate);
   }
 
-  return await runSmaCollectorCookie(userId, startDate, endDate, runtimeCookieJson);
+  return await runSmaCollectorCookie(userId, startDate, endDate, runtimeStorageStateJson);
 }
