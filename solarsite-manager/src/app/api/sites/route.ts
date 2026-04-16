@@ -31,32 +31,30 @@ export async function POST(request: Request) {
       monitoringUrl?: string;
     };
 
-    if (
-      !siteName ||
-      typeof capacity !== "number" ||
-      capacity <= 0 ||
-      !monitoringSystem ||
-      !monitoringUrl
-    ) {
+    if (!siteName || !monitoringSystem) {
       return NextResponse.json(
         {
           error: {
             code: "BAD_REQUEST",
-            message:
-              "siteName, capacity(>0), monitoringSystem, monitoringUrl は必須です。",
+            message: "siteName, monitoringSystem は必須です。",
           },
         },
         { status: 400 }
       );
     }
 
+    const normalizedCapacity =
+      typeof capacity === "number" && Number.isFinite(capacity) && capacity >= 0 ? capacity : 0;
+    const normalizedMonitoringUrl =
+      typeof monitoringUrl === "string" ? monitoringUrl : "";
+
     const site = await prisma.site.create({
       data: {
         siteName,
         location: location ?? null,
-        capacity,
+        capacity: normalizedCapacity,
         monitoringSystem,
-        monitoringUrl,
+        monitoringUrl: normalizedMonitoringUrl,
       },
     });
 

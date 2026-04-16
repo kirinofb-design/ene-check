@@ -52,7 +52,7 @@ export default async function SettingsPage() {
 
       <section className="space-y-3" style={sectionStyle}>
         <h2 style={sectionMainTitleStyle}>
-          監視サイトログイン情報（自動収集 Step 1）
+          監視サイトログイン情報
         </h2>
         <MonitoringCredentialsForm />
       </section>

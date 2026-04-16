@@ -252,7 +252,7 @@ export default function DataCollectSection() {
     <div style={{ textAlign: 'left', height: '100%' }}>
       <div style={cardStyle}>
         <div style={{ marginBottom: '20px' }}>
-          <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: '0' }}>データ収集</h2>
+          <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: '0' }}>データ取得</h2>
           <p style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>同期期間を指定して、データを取得します。</p>
         </div>
 

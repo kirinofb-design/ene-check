@@ -31,9 +31,13 @@ export function ProtectedNavButtons() {
   const pathname = usePathname();
   const isReports = pathname?.startsWith("/reports");
   const isSettings = pathname?.startsWith("/settings");
+  const isAdd = pathname?.startsWith("/add");
 
   return (
     <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap pr-2 [-webkit-overflow-scrolling:touch]">
+      <Link href="/add" style={isAdd ? activeBtnStyle : baseBtnStyle}>
+        編集
+      </Link>
       <Link href="/settings" style={isSettings ? activeBtnStyle : baseBtnStyle}>
         設定
       </Link>

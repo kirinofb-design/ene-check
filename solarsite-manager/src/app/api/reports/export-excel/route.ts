@@ -129,7 +129,7 @@ export async function GET(request: Request) {
 
     // 全発電所（全Site）を対象に出力
     const sites = await prisma.site.findMany({
-      orderBy: { siteName: "asc" },
+      orderBy: [{ createdAt: "asc" }, { siteName: "asc" }],
       select: { id: true, siteName: true, monitoringSystem: true },
     });
     const siteIds = sites.map((s) => s.id);

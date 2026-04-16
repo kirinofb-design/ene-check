@@ -91,7 +91,7 @@ export default function ExcelExportSection() {
       <div style={cardStyle}>
         <div style={{ marginBottom: '20px' }}>
           <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: '0' }}>
-            発電データ自動収集・Excel出力 (Phase 1)
+            データ出力
           </h2>
           <p style={{ fontSize: '12px', color: '#64748b', marginTop: '6px', lineHeight: '1.6' }}>
             対象月を選択してダウンロードしてください。<br/>
