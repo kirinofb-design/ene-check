@@ -209,6 +209,86 @@ function pickDateAndGenerationFromRow(cells: SmaTableCellRow): { dateUtc: Date |
   return { dateUtc, generation };
 }
 
+function countRowsInRange(rows: SmaTableCellRow[], start: Date, end: Date): number {
+  let count = 0;
+  for (const cells of rows) {
+    const parsed = pickDateAndGenerationFromRow(cells);
+    if (!parsed.dateUtc || parsed.generation === null) continue;
+    const t = parsed.dateUtc.getTime();
+    if (t >= start.getTime() && t <= end.getTime()) count++;
+  }
+  return count;
+}
+
+function getRowsDateRange(rows: SmaTableCellRow[]): { min: Date | null; max: Date | null } {
+  let min: Date | null = null;
+  let max: Date | null = null;
+  for (const cells of rows) {
+    const parsed = pickDateAndGenerationFromRow(cells);
+    if (!parsed.dateUtc) continue;
+    if (!min || parsed.dateUtc.getTime() < min.getTime()) min = parsed.dateUtc;
+    if (!max || parsed.dateUtc.getTime() > max.getTime()) max = parsed.dateUtc;
+  }
+  return { min, max };
+}
+
+async function tryGoPreviousPeriod(page: any): Promise<boolean> {
+  const clickPrevInContext = async (ctx: any): Promise<boolean> =>
+    (await ctx
+      .evaluate(() => {
+        const isVisible = (el: Element) => {
+          const node = el as HTMLElement;
+          const rect = node.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          const style = window.getComputedStyle(node);
+          return style.display !== "none" && style.visibility !== "hidden" && style.pointerEvents !== "none";
+        };
+
+        const candidates = Array.from(
+          document.querySelectorAll<HTMLElement>("button,a,span,div,[role='button'],[aria-label],[title]")
+        ).filter(isVisible);
+        const score = (el: HTMLElement): number => {
+          const txt = [
+            el.textContent ?? "",
+            el.getAttribute("aria-label") ?? "",
+            el.getAttribute("title") ?? "",
+            el.getAttribute("class") ?? "",
+          ]
+            .join(" ")
+            .toLowerCase();
+          let s = -9999;
+          if (/prev|previous|back|前|戻|earlier|left|chevron-left|arrow-left/.test(txt)) s = 60;
+          if (/[<＜‹←]/.test(txt)) s = Math.max(s, 55);
+          if (/next|次|forward|right/.test(txt)) s -= 80;
+          return s;
+        };
+        let best: HTMLElement | null = null;
+        let bestScore = -9999;
+        for (const el of candidates) {
+          const s = score(el);
+          if (s > bestScore) {
+            bestScore = s;
+            best = el;
+          }
+        }
+        if (best && bestScore >= 50) {
+          best.click();
+          return true;
+        }
+        return false;
+      })
+      .catch(() => false)) as boolean;
+
+  for (const ctx of smaPageContexts(page)) {
+    const ok = await clickPrevInContext(ctx);
+    if (ok) {
+      await smaDelay(1400, 450);
+      return true;
+    }
+  }
+  return false;
+}
+
 async function extractTableRowsFromContext(context: any): Promise<SmaTableCellRow[]> {
   const rows = (await context.evaluate(() => {
     const dateLike = (s: string) =>
@@ -782,13 +862,20 @@ async function tryDownloadCsvRows(page: any, userId: string, plantOid: string): 
         })
         .catch(() => false)) as boolean;
     for (const ctx of smaPageContexts(page)) {
-      const clickedKnown = await clickDownloadByKnownId(ctx);
-      if (clickedKnown) {
-        logger.info("smaCollector: csv download clicked by known id", {
+      try {
+        const clickedKnown = await clickDownloadByKnownId(ctx);
+        if (clickedKnown) {
+          logger.info("smaCollector: csv download clicked by known id", {
+            userId,
+            extra: { plantOid },
+          });
+          break;
+        }
+      } catch (e) {
+        logger.warn("smaCollector: click known-id csv button failed", {
           userId,
-          extra: { plantOid },
+          extra: { plantOid, error: String(e) },
         });
-        break;
       }
     }
 
@@ -830,6 +917,12 @@ async function tryDownloadCsvRows(page: any, userId: string, plantOid: string): 
       extra: { plantOid, rowCount: rows.length, csvHead: csvSnapshot.slice(0, 180) },
     });
     return rows;
+  } catch (e) {
+    logger.warn("smaCollector: tryDownloadCsvRows failed", {
+      userId,
+      extra: { plantOid, error: String(e) },
+    });
+    return [];
   } finally {
     page.off("response", onResponse);
   }
@@ -1454,10 +1547,13 @@ export async function runSmaCollectorCookie(
 
       const url = page.url();
       const title = await page.title().catch(() => "");
-      const isEnergyPage = title.includes("出力と発電量") || title.includes("Energy");
+      const isEnergyUrl = /\/FixedPages\/EnergyAndPower\.aspx/i.test(url);
+      const isEnergyTitle = title.includes("出力と発電量") || title.includes("Energy");
+      // タイトル取得が空文字になる瞬間があるため、URL判定を優先してページ到達扱いにする
+      const isEnergyPage = isEnergyUrl || isEnergyTitle;
       logger.info("smaCollector: EnergyAndPower result", {
         userId,
-        extra: { plantName, plantOid, energyUrl: url, energyTitle: title, isEnergyPage },
+        extra: { plantName, plantOid, energyUrl: url, energyTitle: title, isEnergyUrl, isEnergyTitle, isEnergyPage },
       });
 
       if (!isEnergyPage) {
@@ -1482,59 +1578,108 @@ export async function runSmaCollectorCookie(
         continue;
       }
 
+      let finalRows: SmaTableCellRow[] = [];
+      let finalSource = "none";
+      let bestRows: SmaTableCellRow[] = [];
+      let bestSource = "none";
+      let bestInRange = 0;
+      const adoptCandidate = (rows: SmaTableCellRow[], source: string) => {
+        if (rows.length === 0) return;
+        const inRange = countRowsInRange(rows, start, end);
+        const shouldAdopt =
+          inRange > bestInRange || (inRange === bestInRange && rows.length > bestRows.length);
+        if (shouldAdopt) {
+          bestRows = rows;
+          bestSource = source;
+          bestInRange = inRange;
+        }
+      };
+
       const tableRows = await extractTableRows(page);
-      let finalRows = tableRows;
-      if (finalRows.length === 0) {
-        const chartRows = await extractRowsFromHighcharts(page);
-        if (chartRows.length > 0) {
-          finalRows = chartRows;
-          logger.info("smaCollector: using highcharts extracted rows", {
+      adoptCandidate(tableRows, "table");
+
+      const chartRows = await extractRowsFromHighcharts(page);
+      if (chartRows.length > 0) {
+        adoptCandidate(chartRows, "highcharts");
+        logger.info("smaCollector: using highcharts extracted rows", {
+          userId,
+          extra: { plantName, plantOid, rowCount: chartRows.length },
+        });
+      }
+
+      const imageMapRows = await extractRowsFromImageMap(page);
+      if (imageMapRows.length > 0) {
+        adoptCandidate(imageMapRows, "imagemap");
+        logger.info("smaCollector: using image map extracted rows", {
+          userId,
+          extra: { plantName, plantOid, rowCount: imageMapRows.length },
+        });
+      }
+
+      if (bestInRange === 0) {
+        // 表示期間が当月固定で対象月に合っていない場合、前期間へ移動して再抽出する
+        for (let i = 0; i < 4 && bestInRange === 0; i++) {
+          const moved = await tryGoPreviousPeriod(page);
+          if (!moved) break;
+          const movedTableRows = await extractTableRows(page);
+          adoptCandidate(movedTableRows, `table_prev_${i + 1}`);
+          const movedChartRows = await extractRowsFromHighcharts(page);
+          adoptCandidate(movedChartRows, `highcharts_prev_${i + 1}`);
+          const movedImageMapRows = await extractRowsFromImageMap(page);
+          adoptCandidate(movedImageMapRows, `imagemap_prev_${i + 1}`);
+          const range = getRowsDateRange(bestRows);
+          logger.info("smaCollector: previous period retry", {
             userId,
-            extra: { plantName, plantOid, rowCount: chartRows.length },
+            extra: {
+              plantName,
+              plantOid,
+              step: i + 1,
+              rowCountInRange: bestInRange,
+              bestSource,
+              bestMinDate: range.min ? range.min.toISOString().slice(0, 10) : null,
+              bestMaxDate: range.max ? range.max.toISOString().slice(0, 10) : null,
+            },
           });
         }
       }
-      if (finalRows.length === 0) {
-        const imageMapRows = await extractRowsFromImageMap(page);
-        if (imageMapRows.length > 0) {
-          finalRows = imageMapRows;
-          logger.info("smaCollector: using image map extracted rows", {
-            userId,
-            extra: { plantName, plantOid, rowCount: imageMapRows.length },
-          });
-        }
-      }
-      if (finalRows.length === 0) {
+
+      // 既に指定期間の行が取れている場合は、画面遷移を誘発しやすいCSV操作をスキップして安定性を優先
+      if (bestInRange === 0) {
         const csvRows = await tryDownloadCsvRows(page, userId, plantOid);
         if (csvRows.length > 0) {
-          finalRows = csvRows;
+          adoptCandidate(csvRows, "csv");
           await saveTraceSnapshot(page, userId, `energy_csv_download_${plantOid}`);
         }
       }
-      if (finalRows.length === 0) {
+
+      if (bestInRange === 0) {
         const movedToDailyReport = await gotoDailyReportIfPossible(page);
         if (movedToDailyReport) {
           await saveTraceSnapshot(page, userId, `daily_report_${plantOid}`);
           await trySwitchToMonthView(page);
           await tryOpenChartGear(page);
           await saveTraceSnapshot(page, userId, `daily_report_month_try_${plantOid}`);
-          finalRows = await extractTableRows(page);
-          if (finalRows.length === 0) {
-            finalRows = await extractRowsFromHighcharts(page);
-          }
+          const dailyTableRows = await extractTableRows(page);
+          adoptCandidate(dailyTableRows, "daily_report_table");
+          const dailyChartRows = await extractRowsFromHighcharts(page);
+          adoptCandidate(dailyChartRows, "daily_report_highcharts");
+          const dailyCsvRows = await tryDownloadCsvRows(page, userId, plantOid);
+          adoptCandidate(dailyCsvRows, "daily_report_csv");
           logger.info("smaCollector: daily report fallback rows", {
             userId,
             extra: {
               plantName,
               plantOid,
               movedToDailyReport,
-              rowCount: finalRows.length,
+              rowCount: bestRows.length,
               url: page.url(),
               title: await page.title().catch(() => ""),
             },
           });
         }
       }
+      finalRows = bestRows;
+      finalSource = bestSource;
       const parsePreview = finalRows.slice(0, 6).map((cells) => {
         const parsed = pickDateAndGenerationFromRow(cells);
         return {
@@ -1545,7 +1690,14 @@ export async function runSmaCollectorCookie(
       });
       logger.info("smaCollector: extracted table rows", {
         userId,
-        extra: { plantName, plantOid, rowCount: finalRows.length, parsePreview },
+        extra: {
+          plantName,
+          plantOid,
+          rowCount: finalRows.length,
+          rowCountInRange: countRowsInRange(finalRows, start, end),
+          selectedSource: finalSource,
+          parsePreview,
+        },
       });
 
       if (finalRows.length === 0) {

@@ -3,6 +3,7 @@ type CollectorKind = "all" | "sma";
 type LockState = {
   allRunning: boolean;
   smaRunning: boolean;
+  allCancelRequested: boolean;
 };
 
 const globalKey = "__collector_lock_state__";
@@ -17,7 +18,7 @@ const stateMap: Map<string, LockState> = (() => {
 function getOrCreateState(userId: string): LockState {
   const existing = stateMap.get(userId);
   if (existing) return existing;
-  const next: LockState = { allRunning: false, smaRunning: false };
+  const next: LockState = { allRunning: false, smaRunning: false, allCancelRequested: false };
   stateMap.set(userId, next);
   return next;
 }
@@ -37,6 +38,7 @@ export function acquireCollectorLock(
       };
     }
     state.allRunning = true;
+    state.allCancelRequested = false;
     return { ok: true };
   }
 
@@ -54,10 +56,40 @@ export function releaseCollectorLock(userId: string, kind: CollectorKind): void 
   const state = stateMap.get(userId);
   if (!state) return;
 
-  if (kind === "all") state.allRunning = false;
+  if (kind === "all") {
+    state.allRunning = false;
+    state.allCancelRequested = false;
+  }
   if (kind === "sma") state.smaRunning = false;
 
   if (!state.allRunning && !state.smaRunning) {
     stateMap.delete(userId);
   }
+}
+
+export function getCollectorLockState(userId: string): LockState {
+  const state = stateMap.get(userId);
+  if (!state) return { allRunning: false, smaRunning: false, allCancelRequested: false };
+  return { ...state };
+}
+
+export function requestCollectorCancel(
+  userId: string,
+  kind: CollectorKind
+): { ok: true; accepted: boolean } | { ok: false; message: string } {
+  const state = stateMap.get(userId);
+  if (!state) return { ok: true, accepted: false };
+  if (kind === "all") {
+    if (!state.allRunning) return { ok: true, accepted: false };
+    state.allCancelRequested = true;
+    return { ok: true, accepted: true };
+  }
+  return { ok: false, message: "未対応のキャンセル種別です。" };
+}
+
+export function isCollectorCancelRequested(userId: string, kind: CollectorKind): boolean {
+  const state = stateMap.get(userId);
+  if (!state) return false;
+  if (kind === "all") return state.allCancelRequested;
+  return false;
 }

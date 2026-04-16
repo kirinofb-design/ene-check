@@ -10,7 +10,7 @@ import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { runSmaCollector } from "@/lib/smaCollector";
 import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
-import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
+import { acquireCollectorLock, isCollectorCancelRequested, releaseCollectorLock } from "@/lib/collectorLock";
 
 type CollectorStepResult = {
   key: string;
@@ -74,7 +74,7 @@ async function ensureDbReachable(retries = 3): Promise<void> {
   let lastError: unknown = null;
   for (let i = 0; i < retries; i++) {
     try {
-      await prisma.$queryRawUnsafe("SELECT 1");
+      await prisma.$queryRaw`SELECT 1`;
       return;
     } catch (e) {
       lastError = e;
@@ -170,7 +170,17 @@ export async function POST(request: Request) {
     }
 
     let steps: CollectorStepResult[];
+    let cancelled = false;
     try {
+      if (isCollectorCancelRequested(userId, "all")) {
+        return NextResponse.json({
+          ok: false,
+          message: "実行取消を受け付けたため、全データ一括取得を開始しませんでした。",
+          recordCount: 0,
+          errorCount: 0,
+          steps: [],
+        });
+      }
       // 6 システムを同時起動（所要時間の短縮）。SQLite では同時書き込みでロックが出ることがある。
       steps = await Promise.all([
         runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)),
@@ -181,7 +191,10 @@ export async function POST(request: Request) {
         runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
       ]);
 
-      await applyPostCollectOverrides(startDate, endDate);
+      cancelled = isCollectorCancelRequested(userId, "all");
+      if (!cancelled) {
+        await applyPostCollectOverrides(startDate, endDate);
+      }
     } finally {
       releaseCollectorLock(userId, "all");
     }
@@ -193,8 +206,10 @@ export async function POST(request: Request) {
     const statusWord = allOk ? "完了" : "一部失敗";
 
     return NextResponse.json({
-      ok: allOk,
-      message: `全コレクター実行が${statusWord}しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`,
+      ok: cancelled ? false : allOk,
+      message: cancelled
+        ? `実行取消を受け付けました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`
+        : `全コレクター実行が${statusWord}しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`,
       recordCount,
       errorCount,
       steps,

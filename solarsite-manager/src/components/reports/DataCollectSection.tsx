@@ -10,6 +10,9 @@ export default function DataCollectSection() {
     setRange(defaultCollectDateRange());
   }, []);
   const [loading, setLoading] = useState<string | null>(null);
+  const [allLocked, setAllLocked] = useState(false);
+  const [allCancelRequested, setAllCancelRequested] = useState(false);
+  const [lockMessage, setLockMessage] = useState<string | null>(null);
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
     FusionSolar: "/api/collect/fusion-solar",
@@ -71,6 +74,10 @@ export default function DataCollectSection() {
   };
 
   const handleCollect = async (systemName: string) => {
+    if (systemName === "all" && allLocked) {
+      alert(lockMessage ?? "実行中（排他ロック中）です。完了してから再実行してください。");
+      return;
+    }
     setLoading(systemName);
     try {
       const endpoint = endpointBySystem[systemName] ?? "/api/collect/all";
@@ -105,6 +112,70 @@ export default function DataCollectSection() {
       setLoading(null);
     }
   };
+
+  const handleCancelAll = async () => {
+    try {
+      const res = await fetch("/api/collect/all/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      const msg = resolveApiMessage(
+        data,
+        res.ok ? "実行取消を受け付けました。" : `APIエラーが発生しました（HTTP ${res.status}）`
+      );
+      alert(msg);
+    } catch {
+      alert("実行取消の通信に失敗しました");
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const RUNNING_POLL_MS = 3000;
+    const IDLE_POLL_MS = 10000;
+
+    const scheduleNext = (ms: number) => {
+      if (cancelled) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void refreshLockState();
+      }, ms);
+    };
+
+    const refreshLockState = async () => {
+      try {
+        const res = await fetch("/api/collect/status", { cache: "no-store" });
+        const data = (await res.json()) as {
+          allRunning?: boolean;
+          allCancelRequested?: boolean;
+          message?: string | null;
+        };
+        if (cancelled) return;
+        const running = !!data?.allRunning;
+        const cancelRequested = !!data?.allCancelRequested;
+        setAllLocked(running);
+        setAllCancelRequested(cancelRequested);
+        setLockMessage(
+          running
+            ? data?.message ?? "実行中（排他ロック中）です。完了してから再実行してください。"
+            : null
+        );
+        scheduleNext(running ? RUNNING_POLL_MS : IDLE_POLL_MS);
+      } catch {
+        if (cancelled) return;
+        // 通信エラー時は待機時と同じ間隔で再試行する
+        scheduleNext(IDLE_POLL_MS);
+      }
+    };
+    void refreshLockState();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   // スタイル定義
   const cardStyle = {
@@ -150,13 +221,29 @@ export default function DataCollectSection() {
     justifyContent: 'center',
     width: 'auto', // 横幅を広げすぎない
     padding: '12px 24px',
-    backgroundColor: loading === 'all' ? '#94a3b8' : '#2563eb',
+    backgroundColor: (loading === 'all' || allLocked) ? '#94a3b8' : '#2563eb',
     color: 'white',
     border: 'none',
     borderRadius: '8px',
     fontSize: '14px',
     fontWeight: 'bold',
-    cursor: loading === 'all' ? 'not-allowed' : 'pointer',
+    cursor: (loading === 'all' || allLocked) ? 'not-allowed' : 'pointer',
+    marginTop: '24px',
+    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+  };
+  const cancelBtnStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 'auto',
+    padding: '12px 24px',
+    backgroundColor: allCancelRequested ? '#9ca3af' : '#ef4444',
+    color: 'white',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '14px',
+    fontWeight: 'bold',
+    cursor: allCancelRequested ? 'not-allowed' : 'pointer',
     marginTop: '24px',
     boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
   };
@@ -207,13 +294,23 @@ export default function DataCollectSection() {
         </div>
 
         <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px' }}>
-          <button 
-            style={mainBtnStyle}
-            onClick={() => handleCollect('all')}
-            disabled={!!loading}
-          >
-            {loading === 'all' ? "取得中..." : "全データ一括取得"}
-          </button>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button 
+              style={mainBtnStyle}
+              onClick={() => handleCollect('all')}
+              disabled={!!loading || allLocked}
+            >
+              {loading === 'all' ? "取得中..." : allLocked ? "実行中（排他ロック中）" : "全データ一括取得"}
+            </button>
+            <button
+              style={cancelBtnStyle}
+              onClick={handleCancelAll}
+              disabled={!allLocked || allCancelRequested}
+              title={!allLocked ? "実行中のみ取消できます" : undefined}
+            >
+              {allCancelRequested ? "取消受付済み" : "実行取消"}
+            </button>
+          </div>
           <p style={{ fontSize: '11px', color: '#64748b', marginTop: '10px', lineHeight: 1.5, marginBottom: 0 }}>
             6システムを同時に実行します（完了までの時間は、もっとも遅い処理にほぼ一致します）。
           </p>
