@@ -189,6 +189,8 @@ export default function DataCollectSection() {
     margin: '0',
     fontFamily: 'sans-serif',
     textAlign: 'left' as const,
+    display: 'flex',
+    flexDirection: 'column' as const,
   };
 
   const inputStyle = {
@@ -293,7 +295,7 @@ export default function DataCollectSection() {
           </div>
         </div>
 
-        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px' }}>
+        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto' }}>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <button 
               style={mainBtnStyle}

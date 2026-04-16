@@ -73,7 +73,8 @@ export default function ExcelExportSection() {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    padding: '12px 24px',
+    height: '45px',
+    padding: '0 24px',
     backgroundColor: '#16a34a', // Excelカラーの緑
     color: 'white',
     border: 'none',
@@ -109,13 +110,13 @@ export default function ExcelExportSection() {
           />
         </div>
 
-        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto' }}>
+        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto', minHeight: '100px' }}>
           <button
             style={excelBtnStyle}
             onClick={() => void handleDownload()}
             disabled={downloading}
           >
-            <span style={{ fontSize: '18px' }}>📊</span>
+            <span style={{ fontSize: '16px', lineHeight: 1 }}>📊</span>
             {downloading ? "Excel を生成中..." : "Excel をダウンロード"}
           </button>
         </div>

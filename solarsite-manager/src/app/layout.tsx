@@ -28,9 +28,8 @@ export default function RootLayout({
             {children}
           </main>
           <footer className="border-t border-slate-800 bg-slate-900/60">
-            <div className="w-full text-xs text-slate-500 flex justify-between" style={{ maxWidth: "420px", padding: "12px 0", margin: "0" }}>
+            <div className="w-full text-xs text-slate-500 flex justify-start" style={{ maxWidth: "420px", padding: "12px 0", margin: "0" }}>
               <span>© {new Date().getFullYear()} SolarSite Manager</span>
-              <span>Phase 1 MVP</span>
             </div>
           </footer>
         </div>
