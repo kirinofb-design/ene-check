@@ -207,13 +207,6 @@ function LoginForm() {
           </div>
         </form>
 
-        <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: "10px" }}>
-          <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
-            テスト用ユーザー:
-            {" "}
-            <code style={{ fontFamily: "monospace", color: "#0f172a" }}>test@example.com / Test1234</code>
-          </p>
-        </div>
       </div>
     </div>
   );
