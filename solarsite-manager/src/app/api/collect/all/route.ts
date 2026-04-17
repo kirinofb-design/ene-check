@@ -11,6 +11,7 @@ import { runSmaCollector } from "@/lib/smaCollector";
 import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
 import { acquireCollectorLock, isCollectorCancelRequested, releaseCollectorLock } from "@/lib/collectorLock";
+import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 
 type CollectorStepResult = {
   key: string;
@@ -181,6 +182,9 @@ export async function POST(request: Request) {
           steps: [],
         });
       }
+      // Vercel では複数コレクターが同時に Chromium を起動すると /tmp 配下の実行ファイル競合で
+      // `spawn ETXTBSY` が起きることがあるため、起動前に一度だけ解決しておく。
+      await prewarmVercelChromiumExecutable();
       // 6 システムを同時起動（所要時間の短縮）。SQLite では同時書き込みでロックが出ることがある。
       steps = await Promise.all([
         runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)),
