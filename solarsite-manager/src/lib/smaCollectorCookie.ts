@@ -1288,8 +1288,15 @@ export async function runSmaCollectorCookie(
   }
 
   const puppeteer = (await import("puppeteer-extra")).default;
-  const StealthPlugin = (await import("puppeteer-extra-plugin-stealth")).default;
-  puppeteer.use(StealthPlugin());
+  try {
+    const StealthPlugin = (await import("puppeteer-extra-plugin-stealth")).default;
+    puppeteer.use(StealthPlugin());
+  } catch (e) {
+    logger.warn("smaCollector: stealth plugin unavailable, continue without stealth", {
+      userId,
+      extra: { error: e instanceof Error ? e.message : String(e) },
+    });
+  }
 
   const browser = await puppeteer.launch({
     headless: isDebugHeadfulEnabled() ? false : true,
