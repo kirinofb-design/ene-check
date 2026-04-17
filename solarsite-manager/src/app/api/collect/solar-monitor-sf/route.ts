@@ -10,7 +10,7 @@ export async function POST(request: Request) {
     const userId = (session.user as { id?: string })?.id;
     if (!userId) {
       return NextResponse.json(
-        { error: { code: "UNAUTHORIZED", message: "ログインが必要です。" } },
+        { error: { code: "UNAUTHORIZED", message: "??????????" } },
         { status: 401 }
       );
     }
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
-    const lock = acquireCollectorLock(userId, "all");
+    const lock = acquireCollectorLock(userId, "solar-monitor-sf");
     if (!lock.ok) {
       return NextResponse.json(
         {
@@ -39,23 +39,23 @@ export async function POST(request: Request) {
     try {
       result = await runSolarMonitorCollector(userId, startDate, endDate, "solar-monitor-sf");
     } finally {
-      releaseCollectorLock(userId, "all");
+      releaseCollectorLock(userId, "solar-monitor-sf");
     }
 
     if (result.recordCount === 0) {
-      console.log("[solar-monitor-sf] 保存件数 0 件（空振りの可能性）", {
+      console.log("[solar-monitor-sf] ???? 0 ??????????", {
         systemId: "solar-monitor-sf",
         targetPeriod: { startDate, endDate },
-        sitesNote: "池新田・本社は同一API内で2プラント処理",
+        sitesNote: "?????????API??2??????",
         recordCount: result.recordCount,
         errorCount: result.errorCount,
-        note: "詳細はサーバーログの [SOLAR_MONITOR_EMPTY_FETCH] を参照",
+        note: "?????????? [SOLAR_MONITOR_EMPTY_FETCH] ???",
       });
     }
 
     return NextResponse.json({
       ok: true,
-      message: `Solar Monitor（池新田・本社）データ取得が完了しました（保存: ${result.recordCount}件 / スキップ: ${result.errorCount}件）。`,
+      message: `Solar Monitor???????????????????????: ${result.recordCount}? / ????: ${result.errorCount}???`,
       recordCount: result.recordCount,
       errorCount: result.errorCount,
     });

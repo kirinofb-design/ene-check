@@ -16,15 +16,20 @@ export async function GET(request: Request) {
 
     const state = getCollectorLockState(userId);
     const allRunning = state.allRunning;
+    const singleRunning = !!state.runningKind && state.runningKind !== "all";
     return NextResponse.json({
       ok: true,
       allRunning,
+      singleRunning,
+      runningKind: state.runningKind,
       smaRunning: state.smaRunning,
       allCancelRequested: state.allCancelRequested,
-      message: allRunning
+      message: (allRunning || singleRunning)
         ? state.allCancelRequested
           ? "実行取消を受け付けています。進行中処理の区切りで停止します。"
-          : "実行中（排他ロック中）です。完了してから再実行してください。"
+          : allRunning
+            ? "実行中（排他ロック中）です。完了してから再実行してください。"
+            : "個別データ取得を実行中（排他ロック中）です。完了してから再実行してください。"
         : null,
     });
   } catch (e) {

@@ -11,6 +11,7 @@ export default function DataCollectSection() {
   }, []);
   const [loading, setLoading] = useState<string | null>(null);
   const [allLocked, setAllLocked] = useState(false);
+  const [runningKind, setRunningKind] = useState<string | null>(null);
   const [allCancelRequested, setAllCancelRequested] = useState(false);
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const endpointBySystem: Record<string, string> = {
@@ -167,13 +168,16 @@ export default function DataCollectSection() {
         const res = await fetch("/api/collect/status", { cache: "no-store" });
         const data = (await res.json()) as {
           allRunning?: boolean;
+          singleRunning?: boolean;
+          runningKind?: string | null;
           allCancelRequested?: boolean;
           message?: string | null;
         };
         if (cancelled) return;
-        const running = !!data?.allRunning;
+        const running = !!data?.allRunning || !!data?.singleRunning;
         const cancelRequested = !!data?.allCancelRequested;
         setAllLocked(running);
+        setRunningKind(typeof data?.runningKind === "string" ? data.runningKind : null);
         setAllCancelRequested(cancelRequested);
         setLockMessage(
           running
@@ -320,7 +324,13 @@ export default function DataCollectSection() {
               onClick={() => handleCollect('all')}
               disabled={!!loading || allLocked}
             >
-              {loading === 'all' ? "取得中..." : allLocked ? "実行中（排他ロック中）" : "全データ一括取得"}
+              {loading === 'all'
+                ? "取得中..."
+                : allLocked
+                  ? runningKind === "all"
+                    ? "実行中（排他ロック中）"
+                    : "他処理実行中（排他ロック中）"
+                  : "全データ一括取得"}
             </button>
             <button
               style={cancelBtnStyle}

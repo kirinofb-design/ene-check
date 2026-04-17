@@ -4,11 +4,6 @@ import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 
 export async function POST(req: Request) {
-  // 強制出力（Next.jsのログ機能を介さない）
-  process.stdout.write("\n\n##########################################\n");
-  process.stdout.write("🔥 API REACHED: /api/collect/solar-monitor-se\n");
-  process.stdout.write("##########################################\n\n");
-
   try {
     const session = await requireAuth(req);
     const userId = (session.user as { id?: string })?.id;
@@ -16,7 +11,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           ok: false,
-          message: "ログインが必要です。",
+          message: "??????????",
           recordCount: 0,
           errorCount: 0,
         },
@@ -28,7 +23,7 @@ export async function POST(req: Request) {
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
-    const lock = acquireCollectorLock(userId, "all");
+    const lock = acquireCollectorLock(userId, "solar-monitor-se");
     if (!lock.ok) {
       return NextResponse.json(
         {
@@ -41,27 +36,27 @@ export async function POST(req: Request) {
       );
     }
 
-    // コレクター実行（常に solar-monitor-se。本社・池新田は /api/collect/solar-monitor-sf）
+    // ?????????? solar-monitor-se???????? /api/collect/solar-monitor-sf?
     let result;
     try {
       result = await runSolarMonitorCollector(userId, startDate, endDate, "solar-monitor-se");
     } finally {
-      releaseCollectorLock(userId, "all");
+      releaseCollectorLock(userId, "solar-monitor-se");
     }
 
     if (result.recordCount === 0) {
-      console.log("[solar-monitor-se] 保存件数 0 件（空振りの可能性）", {
+      console.log("[solar-monitor-se] ???? 0 ??????????", {
         systemId: "solar-monitor-se",
         targetPeriod: { startDate, endDate },
         recordCount: result.recordCount,
         errorCount: result.errorCount,
-        note: "詳細はサーバーログの [SOLAR_MONITOR_EMPTY_FETCH] を参照",
+        note: "?????????? [SOLAR_MONITOR_EMPTY_FETCH] ???",
       });
     }
 
     return NextResponse.json({
       ok: true,
-      message: "データ取得に成功しました",
+      message: "????????????",
       recordCount: result.recordCount,
       errorCount: result.errorCount,
     });
@@ -70,7 +65,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         ok: false,
-        message: error instanceof Error ? error.message : "未知のエラーが発生しました",
+        message: error instanceof Error ? error.message : "?????????????",
         recordCount: 0,
         errorCount: 0,
       },

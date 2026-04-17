@@ -10,7 +10,7 @@ export async function POST(request: Request) {
     const userId = (session.user as { id?: string })?.id;
     if (!userId) {
       return NextResponse.json(
-        { error: { code: "UNAUTHORIZED", message: "ログインが必要です。" } },
+        { error: { code: "UNAUTHORIZED", message: "??????????" } },
         { status: 401 }
       );
     }
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
-    const lock = acquireCollectorLock(userId, "all");
+    const lock = acquireCollectorLock(userId, "eco-megane");
     if (!lock.ok) {
       return NextResponse.json(
         {
@@ -39,23 +39,11 @@ export async function POST(request: Request) {
     try {
       result = await runEcoMeganeCollector(userId, startDate, endDate);
     } finally {
-      releaseCollectorLock(userId, "all");
-    }
-
-    if (!result.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          message: result.message,
-          recordCount: result.recordCount,
-          errorCount: result.errorCount,
-        },
-        { status: 200 }
-      );
+      releaseCollectorLock(userId, "eco-megane");
     }
 
     return NextResponse.json({
-      ok: true,
+      ok: result.ok,
       message: result.message,
       recordCount: result.recordCount,
       errorCount: result.errorCount,

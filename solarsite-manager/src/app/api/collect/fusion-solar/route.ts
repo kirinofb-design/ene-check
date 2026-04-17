@@ -12,7 +12,7 @@ export async function POST(request: Request) {
     const userId = (session.user as { id?: string })?.id;
     if (!userId) {
       return NextResponse.json(
-        { error: { code: "UNAUTHORIZED", message: "ログインが必要です。" } },
+        { error: { code: "UNAUTHORIZED", message: "??????????" } },
         { status: 401 }
       );
     }
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
-    const lock = acquireCollectorLock(userId, "all");
+    const lock = acquireCollectorLock(userId, "fusion-solar");
     if (!lock.ok) {
       return NextResponse.json(
         {
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     try {
       result = await runFusionSolarCollector(userId, startDate, endDate);
     } finally {
-      releaseCollectorLock(userId, "all");
+      releaseCollectorLock(userId, "fusion-solar");
     }
 
     return NextResponse.json({

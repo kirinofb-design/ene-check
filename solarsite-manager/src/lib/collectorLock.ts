@@ -1,8 +1,16 @@
-type CollectorKind = "all" | "sma";
+export type CollectorKind =
+  | "all"
+  | "sma"
+  | "eco-megane"
+  | "fusion-solar"
+  | "laplace"
+  | "solar-monitor-sf"
+  | "solar-monitor-se";
 
 type LockState = {
   allRunning: boolean;
   smaRunning: boolean;
+  runningKind: CollectorKind | null;
   allCancelRequested: boolean;
 };
 
@@ -18,9 +26,35 @@ const stateMap: Map<string, LockState> = (() => {
 function getOrCreateState(userId: string): LockState {
   const existing = stateMap.get(userId);
   if (existing) return existing;
-  const next: LockState = { allRunning: false, smaRunning: false, allCancelRequested: false };
+  const next: LockState = {
+    allRunning: false,
+    smaRunning: false,
+    runningKind: null,
+    allCancelRequested: false,
+  };
   stateMap.set(userId, next);
   return next;
+}
+
+function labelByKind(kind: CollectorKind): string {
+  switch (kind) {
+    case "all":
+      return "全データ一括取得";
+    case "sma":
+      return "SMA収集";
+    case "eco-megane":
+      return "eco-megane収集";
+    case "fusion-solar":
+      return "FusionSolar収集";
+    case "laplace":
+      return "ラプラス収集";
+    case "solar-monitor-sf":
+      return "Solar Monitor（池新田・本社）収集";
+    case "solar-monitor-se":
+      return "Solar Monitor（須山）収集";
+    default:
+      return "データ収集";
+  }
 }
 
 export function acquireCollectorLock(
@@ -28,27 +62,19 @@ export function acquireCollectorLock(
   kind: CollectorKind
 ): { ok: true } | { ok: false; message: string } {
   const state = getOrCreateState(userId);
-
-  // all は他処理と排他、sma も all と排他
-  if (kind === "all") {
-    if (state.allRunning || state.smaRunning) {
-      return {
-        ok: false,
-        message: "他の収集処理が実行中です。完了してから「全データ一括取得」を実行してください。",
-      };
-    }
-    state.allRunning = true;
-    state.allCancelRequested = false;
-    return { ok: true };
-  }
-
-  if (state.allRunning || state.smaRunning) {
+  if (state.runningKind !== null) {
     return {
       ok: false,
-      message: "他の収集処理が実行中です。完了してから「SMA収集」を実行してください。",
+      message: `他の収集処理（${labelByKind(state.runningKind)}）が実行中です。完了してから「${labelByKind(
+        kind
+      )}」を実行してください。`,
     };
   }
-  state.smaRunning = true;
+
+  state.runningKind = kind;
+  state.allRunning = kind === "all";
+  state.smaRunning = kind === "sma";
+  state.allCancelRequested = false;
   return { ok: true };
 }
 
@@ -56,20 +82,21 @@ export function releaseCollectorLock(userId: string, kind: CollectorKind): void 
   const state = stateMap.get(userId);
   if (!state) return;
 
-  if (kind === "all") {
-    state.allRunning = false;
-    state.allCancelRequested = false;
-  }
-  if (kind === "sma") state.smaRunning = false;
+  // 別処理の誤解放を防ぐ
+  if (state.runningKind !== kind) return;
 
-  if (!state.allRunning && !state.smaRunning) {
+  state.runningKind = null;
+  state.allRunning = false;
+  state.smaRunning = false;
+  state.allCancelRequested = false;
+  if (!state.runningKind) {
     stateMap.delete(userId);
   }
 }
 
 export function getCollectorLockState(userId: string): LockState {
   const state = stateMap.get(userId);
-  if (!state) return { allRunning: false, smaRunning: false, allCancelRequested: false };
+  if (!state) return { allRunning: false, smaRunning: false, runningKind: null, allCancelRequested: false };
   return { ...state };
 }
 
@@ -80,7 +107,7 @@ export function requestCollectorCancel(
   const state = stateMap.get(userId);
   if (!state) return { ok: true, accepted: false };
   if (kind === "all") {
-    if (!state.allRunning) return { ok: true, accepted: false };
+    if (!state.runningKind) return { ok: true, accepted: false };
     state.allCancelRequested = true;
     return { ok: true, accepted: true };
   }

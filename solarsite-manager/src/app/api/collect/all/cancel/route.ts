@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       accepted: result.accepted,
       message: result.accepted
         ? "実行取消を受け付けました。進行中の処理の区切りで停止します。"
-        : "現在実行中の全データ一括取得はありません。",
+        : "現在実行中のデータ取得処理はありません。",
     });
   } catch (e) {
     return handleApiError(request, e);
