@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/encryption";
 import { collectSolarMonitor, loginAndOpenSolarMonitorMenu } from "@/lib/solarMonitorBaseCollector";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
+import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 
 const TARGET_PLANTS_SF = [
   {
@@ -81,6 +82,7 @@ export async function runSolarMonitorCollector(
   systemId: SolarMonitorSystemId = "solar-monitor-sf"
 ): Promise<{ recordCount: number; errorCount: number }> {
   try {
+    throwIfAllCollectCancelled(userId);
     const start = parseYmdToUtcDate(startDate);
     const end = parseYmdToUtcDate(endDate);
     if (!start || !end) {
@@ -110,6 +112,7 @@ export async function runSolarMonitorCollector(
 
     const siteByPlant = new Map<string, { id: string; siteName: string }>();
     for (const plant of cfg.targetPlants) {
+      throwIfAllCollectCancelled(userId);
       const hitPool = sites.length > 0 ? sites : allSites;
       const hit = hitPool.find((s) => normalizeName(s.siteName).includes(normalizeName(plant.siteKeyword)));
       if (!hit) {
@@ -145,6 +148,7 @@ export async function runSolarMonitorCollector(
 
       const months = getMonthsInRange(start, end);
       for (const plant of cfg.targetPlants) {
+        throwIfAllCollectCancelled(userId);
         const site = siteByPlant.get(plant.optionText);
         if (!site) continue;
 
@@ -152,6 +156,7 @@ export async function runSolarMonitorCollector(
         void matched;
 
         for (const yearMonth of months) {
+          throwIfAllCollectCancelled(userId);
           const [yearStr, monthStr] = yearMonth.split("-");
           const rows = await collectSolarMonitor({
             page,
@@ -161,6 +166,7 @@ export async function runSolarMonitorCollector(
           });
           let savedInMonth = 0;
           for (const row of rows) {
+            throwIfAllCollectCancelled(userId);
             if (row.date.getTime() < start.getTime() || row.date.getTime() > end.getTime()) {
               continue;
             }

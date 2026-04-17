@@ -3,6 +3,7 @@ import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { autoLogin } from "@/lib/autoLogin";
+import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import type { Page } from "playwright-core";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
@@ -217,6 +218,7 @@ export async function runFusionSolarCollector(
   let errorCount = 0;
 
   try {
+    throwIfAllCollectCancelled(userId);
     let storageStateJson: string | null = null;
     const loginResult = await autoLogin(userId, "fusion-solar", { headless: true });
     if (loginResult.ok && loginResult.storageStateJson) {
@@ -259,9 +261,11 @@ export async function runFusionSolarCollector(
 
     // 発電所ごと × 月ごとにループ
     for (const station of FUSION_SOLAR_STATIONS) {
+      throwIfAllCollectCancelled(userId);
       const stationReportUrl = STATION_REPORT_URL_TEMPLATE.replace("{ne}", station.ne);
 
       for (const yearMonth of months) {
+        throwIfAllCollectCancelled(userId);
         logger.info("fusionSolarCollector: station + month", {
           extra: { station: station.name, ne: station.ne, yearMonth },
           userId,
@@ -315,6 +319,7 @@ export async function runFusionSolarCollector(
         const allRows: { dateStr: string; pcsKwhText: string }[] = [];
 
         while (true) {
+          throwIfAllCollectCancelled(userId);
           // 現在ページのテーブル行を取得
           const pageRows = await page.$$eval("table tbody tr", (trs) =>
             trs.map((tr) => {
@@ -350,6 +355,7 @@ export async function runFusionSolarCollector(
         }
 
         for (const row of allRows) {
+          throwIfAllCollectCancelled(userId);
           const { dateStr, pcsKwhText } = row;
           if (!dateStr || !pcsKwhText) {
             errorCount++;

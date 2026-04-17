@@ -3,6 +3,8 @@ import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
 import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 
+export const maxDuration = 300;
+
 export async function POST(request: Request) {
   try {
     const session = await requireAuth(request);

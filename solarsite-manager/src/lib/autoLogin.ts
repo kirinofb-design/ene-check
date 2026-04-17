@@ -189,13 +189,16 @@ async function loginFusionSolar(page: any, loginId: string, password: string, ti
 
   // FusionSolar はSPAで要素が遅れて出ることが多い
   const idSelCandidates = [
-    'input[type="text"]',
+    "input#username",
+    'input[name="username"]',
     'input[placeholder*="ユーザー" i]',
     'input[placeholder*="User" i]',
     'input[name*="user" i]',
+    'input[type="text"]',
   ];
-  const pwSelCandidates = ['input[type="password"]'];
+  const pwSelCandidates = ['input#value', 'input[name="password"]', 'input[type="password"]'];
   const loginBtnCandidates = [
+    "#btn_outerverify",
     'button:has-text("ログイン")',
     'button:has-text("Login")',
     'button[type="submit"]',
@@ -222,8 +225,25 @@ async function loginFusionSolar(page: any, loginId: string, password: string, ti
   }
   if (!ok) throw new Error("password input not found (fusion-solar)");
 
+  let clicked = false;
   for (const sel of loginBtnCandidates) {
-    if (await tryClick(page, sel)) break;
+    if (await tryClick(page, sel)) {
+      clicked = true;
+      break;
+    }
+  }
+  if (!clicked) throw new Error("login submit button not found (fusion-solar)");
+
+  try {
+    await page.waitForFunction(
+      () => {
+        const href = location.href.toLowerCase();
+        return !href.includes("/unisso/login") && !href.includes("#/login");
+      },
+      { timeout: timeoutMs }
+    );
+  } catch {
+    throw new Error("fusion-solar login did not complete");
   }
   await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
 }

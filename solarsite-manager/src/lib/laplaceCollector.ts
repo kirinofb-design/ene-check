@@ -6,6 +6,7 @@ import iconv from "iconv-lite";
 import type { Download, Page } from "playwright-core";
 import { prisma } from "@/lib/prisma";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
+import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
 
@@ -850,6 +851,7 @@ export async function runLaplaceCollector(
   let errorCount = 0;
 
   try {
+    throwIfAllCollectCancelled(userId);
     const context = await browser.newContext({
       acceptDownloads: true,
       userAgent:
@@ -866,6 +868,7 @@ export async function runLaplaceCollector(
 
     const months = getMonthsInRange(start, end);
     for (const yearMonth of months) {
+      throwIfAllCollectCancelled(userId);
       await navigateToDownloadFromTop(page);
       const download = await configureLaplaceDownloadForm(page, yearMonth);
       const zipPath = path.join(os.tmpdir(), `laplace-${yearMonth}-${Date.now()}.zip`);

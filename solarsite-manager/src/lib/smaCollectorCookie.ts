@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
+import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1470,6 +1471,7 @@ export async function runSmaCollectorCookie(
 
     // 発電所ループ: /Plants のリンクから plantOid を取得し、RedirectToPlant -> EnergyAndPower
     for (const station of SMA_STATIONS) {
+      throwIfAllCollectCancelled(userId);
       try {
       const plantName = station.displayName;
       logger.info("smaCollector: processing station", { userId, extra: { plantName } });
@@ -1710,6 +1712,7 @@ export async function runSmaCollectorCookie(
         continue;
       }
 
+      throwIfAllCollectCancelled(userId);
       const upserts = finalRows
         .map((cells) => pickDateAndGenerationFromRow(cells))
         .filter(

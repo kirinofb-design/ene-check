@@ -90,10 +90,21 @@ export default function DataCollectSection() {
           system: systemName,
         }),
       });
-      const data = await response.json();
+      let data: unknown = null;
+      try {
+        data = await response.json();
+      } catch {
+        const text = await response.text().catch(() => "");
+        data = { message: text || null };
+      }
 
-      if (systemName === "all" && Array.isArray(data.steps)) {
-        alert(formatAllCollectResult(data));
+      if (
+        systemName === "all" &&
+        data &&
+        typeof data === "object" &&
+        Array.isArray((data as { steps?: unknown[] }).steps)
+      ) {
+        alert(formatAllCollectResult(data as { message?: string; steps?: CollectStep[] }));
         return;
       }
 
@@ -101,7 +112,7 @@ export default function DataCollectSection() {
         data,
         response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`
       );
-      if (data.ok) {
+      if (data && typeof data === "object" && (data as { ok?: boolean }).ok) {
         alert(`${systemName}: ${message}`);
       } else {
         alert(`${systemName}のエラー: ${message}`);
@@ -120,6 +131,13 @@ export default function DataCollectSection() {
         headers: { "Content-Type": "application/json" },
       });
       const data = await res.json();
+      const accepted =
+        data && typeof data === "object" && Boolean((data as { accepted?: boolean }).accepted);
+      if (accepted) {
+        // 次回ポーリング待ちにせず、即時に取消受付表示へ切り替える
+        setAllCancelRequested(true);
+        setLockMessage("実行取消を受け付けました。進行中の処理の区切りで停止します。");
+      }
       const msg = resolveApiMessage(
         data,
         res.ok ? "実行取消を受け付けました。" : `APIエラーが発生しました（HTTP ${res.status}）`

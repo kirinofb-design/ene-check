@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/encryption";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
+import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 
 const ECO_MEGANE_LOGIN_URL = "https://eco-megane.jp/login";
 const ECO_MEGANE_PRODUCT_LIST_URL =
@@ -92,6 +93,7 @@ export async function runEcoMeganeCollector(
   const browser = await launchChromiumForRuntime({ headless: true });
 
   try {
+    throwIfAllCollectCancelled(userId);
     const context = await browser.newContext({
       acceptDownloads: true,
     });
@@ -234,6 +236,7 @@ export async function runEcoMeganeCollector(
       });
     }
 
+    throwIfAllCollectCancelled(userId);
     const { recordCount, errorCount } = await parseAndUpsertCsv(csvText);
     return {
       ok: true,
