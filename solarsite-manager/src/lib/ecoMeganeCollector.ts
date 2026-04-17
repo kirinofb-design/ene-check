@@ -5,6 +5,7 @@ import iconv from "iconv-lite";
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/encryption";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 
 const ECO_MEGANE_LOGIN_URL = "https://eco-megane.jp/login";
 const ECO_MEGANE_PRODUCT_LIST_URL =
@@ -88,8 +89,7 @@ export async function runEcoMeganeCollector(
   const loginId = cred.loginId;
   const password = decryptSecret(cred.encryptedPassword);
 
-  const pw = await import("playwright");
-  const browser = await pw.chromium.launch({ headless: true });
+  const browser = await launchChromiumForRuntime({ headless: true });
 
   try {
     const context = await browser.newContext({

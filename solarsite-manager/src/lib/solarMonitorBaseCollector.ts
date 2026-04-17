@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "fs";
 import fs from "fs/promises";
 import path from "path";
 import * as XLSX from "xlsx";
-import type { Page } from "playwright";
+import type { Page } from "playwright-core";
 
 export type DailyGenerationInput = {
   date: Date;

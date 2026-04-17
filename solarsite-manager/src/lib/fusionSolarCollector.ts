@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
@@ -92,8 +93,7 @@ export async function runFusionSolarCollector(
   const loginId = cred.loginId;
   const password = decryptSecret(cred.encryptedPassword);
 
-  const pw = await import("playwright");
-  const browser = await pw.chromium.launch({ headless: true });
+  const browser = await launchChromiumForRuntime({ headless: true });
 
   let recordCount = 0;
   let errorCount = 0;

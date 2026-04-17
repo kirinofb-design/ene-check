@@ -3,8 +3,9 @@ import os from "os";
 import path from "path";
 import AdmZip from "adm-zip";
 import iconv from "iconv-lite";
-import type { Download, Page } from "playwright";
+import type { Download, Page } from "playwright-core";
 import { prisma } from "@/lib/prisma";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
 
@@ -780,15 +781,14 @@ export async function runLaplaceCollector(
   const password = decryptSecret(cred.encryptedPassword);
   const loginId = cred.loginId;
 
-  const pw = await import("playwright");
   const headful = isLaplaceDebugHeadfulEnabled();
   logger.info("laplaceCollector: browser launch mode", {
     userId,
     extra: { headful, envHeadful: process.env.LAPLACE_DEBUG_HEADFUL ?? null, nodeEnv: process.env.NODE_ENV ?? null },
   });
-  const browser = await pw.chromium.launch({
+  const browser = await launchChromiumForRuntime({
     headless: !headful,
-    args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+    extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
   });
   let recordCount = 0;
   let errorCount = 0;

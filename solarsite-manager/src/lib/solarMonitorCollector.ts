@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/encryption";
 import { collectSolarMonitor, loginAndOpenSolarMonitorMenu } from "@/lib/solarMonitorBaseCollector";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 
 const TARGET_PLANTS_SF = [
   {
@@ -118,10 +119,9 @@ export async function runSolarMonitorCollector(
       siteByPlant.set(plant.optionText, hit);
     }
 
-    const pw = await import("playwright");
-    const browser = await pw.chromium.launch({
+    const browser = await launchChromiumForRuntime({
       headless: true,
-      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+      extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
     });
 
     let recordCount = 0;
