@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
-    const lock = acquireCollectorLock(userId, "sma");
+    const lock = acquireCollectorLock(userId, "all");
     if (!lock.ok) {
       return NextResponse.json(
         {
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     try {
       result = await runSmaCollector(userId, startDate, endDate);
     } finally {
-      releaseCollectorLock(userId, "sma");
+      releaseCollectorLock(userId, "all");
     }
 
     return NextResponse.json({

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
 import { runEcoMeganeCollector } from "@/lib/ecoMeganeCollector";
+import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 
 export async function POST(request: Request) {
   try {
@@ -21,7 +22,25 @@ export async function POST(request: Request) {
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
-    const result = await runEcoMeganeCollector(userId, startDate, endDate);
+    const lock = acquireCollectorLock(userId, "all");
+    if (!lock.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          message: lock.message,
+          recordCount: 0,
+          errorCount: 0,
+        },
+        { status: 409 }
+      );
+    }
+
+    let result;
+    try {
+      result = await runEcoMeganeCollector(userId, startDate, endDate);
+    } finally {
+      releaseCollectorLock(userId, "all");
+    }
 
     if (!result.ok) {
       return NextResponse.json(
