@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
+import { autoLogin } from "@/lib/autoLogin";
 import type { Page } from "playwright-core";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
@@ -208,11 +209,29 @@ export async function runFusionSolarCollector(
   let errorCount = 0;
 
   try {
-    const context = await browser.newContext();
+    let storageStateJson: string | null = null;
+    const loginResult = await autoLogin(userId, "fusion-solar", { headless: true });
+    if (loginResult.ok && loginResult.storageStateJson) {
+      storageStateJson = loginResult.storageStateJson;
+      logger.info("fusionSolarCollector: using runtime storageState from autoLogin", {
+        userId,
+      });
+    } else {
+      logger.warn("fusionSolarCollector: autoLogin failed, fallback to manual login", {
+        userId,
+        extra: { message: loginResult.message },
+      });
+    }
+
+    const context = storageStateJson
+      ? await browser.newContext({ storageState: JSON.parse(storageStateJson) })
+      : await browser.newContext();
     const page = await context.newPage();
     page.setDefaultTimeout(60_000);
 
-    await loginFusionSolar(page, loginId, password, userId);
+    if (!storageStateJson) {
+      await loginFusionSolar(page, loginId, password, userId);
+    }
 
     const months = getMonthsInRange(start, end);
 
