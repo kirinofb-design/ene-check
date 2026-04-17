@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
-import { handleApiError } from "@/lib/apiError";
 import { runSmaCollector } from "@/lib/smaCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
+import { logger } from "@/lib/logger";
 
 export const maxDuration = 300;
 
@@ -51,7 +51,16 @@ export async function POST(request: Request) {
       errorCount: result.errorCount,
     });
   } catch (e) {
-    return handleApiError(request, e);
+    logger.error("sma collect route failed", undefined, e);
+    return NextResponse.json(
+      {
+        ok: false,
+        message: e instanceof Error ? e.message : "SMA?????????????",
+        recordCount: 0,
+        errorCount: 0,
+      },
+      { status: 200 }
+    );
   }
 }
 
