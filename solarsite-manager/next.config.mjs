@@ -5,6 +5,8 @@ const nextConfig = {
     serverComponentsExternalPackages: [
       "puppeteer-extra",
       "puppeteer-extra-plugin-stealth",
+      "puppeteer-extra-plugin-user-preferences",
+      "puppeteer-extra-plugin-user-data-dir",
       "puppeteer",
       // バンドルに入れると @sparticuz/chromium の bin パスが壊れるため外部モジュールとして解決させる
       "playwright-core",
@@ -20,6 +22,7 @@ const nextConfig = {
         "./node_modules/puppeteer-extra/**",
         "./node_modules/puppeteer-extra-plugin-stealth/**",
         "./node_modules/puppeteer-extra-plugin-user-preferences/**",
+        "./node_modules/puppeteer-extra-plugin-user-data-dir/**",
         "./node_modules/puppeteer/**",
       ],
       "/api/collect/sma": [
@@ -27,6 +30,7 @@ const nextConfig = {
         "./node_modules/puppeteer-extra/**",
         "./node_modules/puppeteer-extra-plugin-stealth/**",
         "./node_modules/puppeteer-extra-plugin-user-preferences/**",
+        "./node_modules/puppeteer-extra-plugin-user-data-dir/**",
         "./node_modules/puppeteer/**",
       ],
     },
