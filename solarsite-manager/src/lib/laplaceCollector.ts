@@ -264,7 +264,7 @@ async function configureLaplaceDownloadForm(page: Page, yearMonth: string): Prom
 async function loginLaplace(page: any, loginId: string, password: string) {
   // ステップ3: 利用規約アラート等の window.alert — page.goto() より前に登録
   page.on("dialog", async (dialog: { message(): string; accept(): Promise<void> }) => {
-    console.log("dialog:", dialog.message());
+    logger.info("laplaceCollector: dialog", { extra: { message: dialog.message() } });
     await dialog.accept().catch(() => {});
   });
 
@@ -326,23 +326,65 @@ async function loginLaplace(page: any, loginId: string, password: string) {
   const onTermsReconsentPage =
     bodyAfterLogin.includes("利用規約の再同意") ||
     bodyAfterLogin.includes("操作を続ける") ||
-    bodyAfterLogin.includes("利用規約を読み、その内容に同意します");
-  const tosCheckbox = onTermsReconsentPage ? await page.$('input[type="checkbox"]') : null;
-  if (tosCheckbox) {
-    console.log("利用規約ページ検出 — 同意して続行");
-    await tosCheckbox.click();
-    await page.waitForTimeout(500);
-    await page.click('button:has-text("操作を続ける")');
+    bodyAfterLogin.includes("利用規約を読み、その内容に同意します") ||
+    (bodyAfterLogin.includes("利用規約") &&
+      (bodyAfterLogin.includes("同意") || bodyAfterLogin.includes("読み")));
+
+  if (onTermsReconsentPage) {
+    logger.info("laplaceCollector: terms reconsent page detected", { extra: { url: page.url() } });
+
+    // 文言ゆれに強い同意操作（チェック→続行）
+    const checkboxCandidates = [
+      page.getByRole("checkbox", { name: /利用規約/i }).first(),
+      page.locator('input[type="checkbox"]').first(),
+    ];
+    for (const cb of checkboxCandidates) {
+      try {
+        if (await cb.count()) {
+          await cb.check({ timeout: 5000 }).catch(async () => {
+            await cb.click({ timeout: 5000 }).catch(() => {});
+          });
+          break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const continueBtnCandidates = [
+      page.getByRole("button", { name: /操作を続ける|同意して続ける|次へ|OK|同意/i }).first(),
+      page.locator('button:has-text("操作を続ける")').first(),
+      page.locator('button:has-text("同意")').first(),
+      page.locator('input[type="submit"]').first(),
+    ];
+    let clicked = false;
+    for (const btn of continueBtnCandidates) {
+      try {
+        if (await btn.count()) {
+          await btn.click({ timeout: 8000 });
+          clicked = true;
+          break;
+        }
+      } catch {
+        // try next
+      }
+    }
+    if (!clicked) {
+      logger.warn("laplaceCollector: terms continue button not found", { extra: { url: page.url() } });
+    }
+
     await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
   }
 
-  console.log("after login URL:", page.url());
-  console.log("after login title:", await page.title());
+  logger.info("laplaceCollector: after login", { extra: { url: page.url(), title: await page.title() } });
 
-  const stillLogin = await page.locator(".loginContainer").isVisible().catch(() => false);
+  const loginContainer = page.locator(".loginContainer").first();
+  const stillLogin = (await loginContainer.count()) > 0 && (await loginContainer.isVisible().catch(() => false));
   if (stillLogin) {
     const bodySnippet = (await page.locator("body").innerText().catch(() => "")).slice(0, 1200);
-    console.log("login still visible after submit. body snippet:", bodySnippet.replace(/\s+/g, " ").trim());
+    logger.warn("laplaceCollector: login container still visible", {
+      extra: { url: page.url(), bodySnippet: bodySnippet.replace(/\s+/g, " ").trim() },
+    });
     throw new Error(
       "ラプラス: ログイン後もログイン画面のままです。ID/パスワード・利用規約の同意を確認してください。"
     );

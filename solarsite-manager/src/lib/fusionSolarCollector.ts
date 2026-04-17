@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
+import type { Page } from "playwright-core";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
@@ -40,6 +41,98 @@ function getMonthsInRange(startDate: Date, endDate: Date): string[] {
     months.push(`${y}-${m}`);
   }
   return months;
+}
+
+async function loginFusionSolar(page: Page, loginId: string, password: string, userId: string) {
+  // autoLogin の FusionSolar 手順に寄せる（SPA で要素出現が遅い）
+  logger.info("fusionSolarCollector: navigating to login", { extra: { url: BASE_URL }, userId });
+  await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+
+  const idSelCandidates = [
+    'input[type="text"]',
+    'input[placeholder*="ユーザー" i]',
+    'input[placeholder*="User" i]',
+    'input[name*="user" i]',
+    'input#username',
+  ];
+  const pwSelCandidates = ['input[type="password"]', 'input#value'];
+  const loginBtnCandidates = [
+    'button:has-text("ログイン")',
+    'button:has-text("Login")',
+    'button[type="submit"]',
+    "#btn_outerverify",
+  ];
+
+  const start = Date.now();
+  const hardTimeoutMs = 45_000;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (Date.now() - start > hardTimeoutMs) {
+      throw new Error("FusionSolar: ログインフォームの入力欄が表示されませんでした（タイムアウト）。");
+    }
+
+    for (const sel of idSelCandidates) {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) {
+        const visible = await loc.isVisible().catch(() => false);
+        if (visible) {
+          await loc.fill(loginId);
+          break;
+        }
+      }
+    }
+
+    for (const sel of pwSelCandidates) {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) {
+        const visible = await loc.isVisible().catch(() => false);
+        if (visible) {
+          await loc.fill(password);
+          break;
+        }
+      }
+    }
+
+    let clicked = false;
+    for (const sel of loginBtnCandidates) {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) {
+        const visible = await loc.isVisible().catch(() => false);
+        if (visible) {
+          await loc.click();
+          clicked = true;
+          break;
+        }
+      }
+    }
+
+    if (clicked) break;
+    await page.waitForTimeout(250);
+  }
+
+  await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
+
+  // ログイン完了の目安: パスワード欄が消える / pvmswebsite に入る / ログインボタンが無効化 など
+  try {
+    await page.waitForFunction(
+      () => {
+        const pw = document.querySelector('input[type="password"]') as HTMLInputElement | null;
+        const href = location.href;
+        if (href.includes("pvmswebsite")) return true;
+        if (!pw) return true;
+        const r = pw.getBoundingClientRect();
+        const hidden = r.width === 0 || r.height === 0;
+        const style = window.getComputedStyle(pw);
+        const offscreen = style.display === "none" || style.visibility === "hidden" || style.opacity === "0";
+        return hidden || offscreen;
+      },
+      { timeout: 60_000 }
+    );
+  } catch {
+    const url = page.url();
+    const title = await page.title().catch(() => "(title取得失敗)");
+    throw new Error(`FusionSolar: ログイン完了を確認できませんでした（url=${url}, title=${title}）。`);
+  }
 }
 
 // FusionSolar の画面上の発電所名称と DB の Site.siteName のマッピング
@@ -103,13 +196,7 @@ export async function runFusionSolarCollector(
     const page = await context.newPage();
     page.setDefaultTimeout(60_000);
 
-    // 1. ログイン
-    logger.info("fusionSolarCollector: navigating to login", { extra: { url: BASE_URL }, userId });
-    await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
-    await page.locator("input#username").fill(loginId);
-    await page.locator("input#value").fill(password);
-    await page.locator("#btn_outerverify").click();
-    await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
+    await loginFusionSolar(page, loginId, password, userId);
 
     const months = getMonthsInRange(start, end);
 
@@ -126,8 +213,22 @@ export async function runFusionSolarCollector(
         await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
         await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
 
+        // セッション切れ等でログイン画面に戻ることがあるため、必要なら再ログインしてから待つ
+        const needsRelogin =
+          (await page.locator("input#username").count()) > 0 &&
+          (await page.locator("input#username").first().isVisible().catch(() => false));
+        if (needsRelogin) {
+          logger.warn("fusionSolarCollector: relogin required before report page", {
+            userId,
+            extra: { url: page.url(), station: station.name },
+          });
+          await loginFusionSolar(page, loginId, password, userId);
+          await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
+          await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+        }
+
         // ページ読み込み完了を待つ
-        await page.waitForSelector(".ant-picker-input input", { timeout: 30000 });
+        await page.waitForSelector(".ant-picker-input input", { timeout: 90_000 });
         await page.waitForTimeout(2000);
 
         // 粒度を「月別」に切り替え（文字化け回避のため title 属性で直接指定）
