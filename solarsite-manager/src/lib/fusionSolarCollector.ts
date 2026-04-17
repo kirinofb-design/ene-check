@@ -141,7 +141,11 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
   try {
     await Promise.all([
       page.waitForURL(urlLooksLoggedIn, { timeout: 120_000 }),
-      loginBtn.click(),
+      // クリックが効かないケースがあるため Enter 送信も併用する
+      (async () => {
+        await loginBtn.click();
+        await page.keyboard.press("Enter").catch(() => {});
+      })(),
     ]);
   } catch {
     const url = page.url();
@@ -203,7 +207,10 @@ export async function runFusionSolarCollector(
   const loginId = cred.loginId;
   const password = decryptSecret(cred.encryptedPassword);
 
-  const browser = await launchChromiumForRuntime({ headless: true });
+  const browser = await launchChromiumForRuntime({
+    headless: true,
+    extraArgs: ["--disable-blink-features=AutomationControlled"],
+  });
 
   let recordCount = 0;
   let errorCount = 0;
@@ -224,10 +231,24 @@ export async function runFusionSolarCollector(
     }
 
     const context = storageStateJson
-      ? await browser.newContext({ storageState: JSON.parse(storageStateJson) })
-      : await browser.newContext();
+      ? await browser.newContext({
+          storageState: JSON.parse(storageStateJson),
+          userAgent:
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          locale: "ja-JP",
+        })
+      : await browser.newContext({
+          userAgent:
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          locale: "ja-JP",
+        });
     const page = await context.newPage();
     page.setDefaultTimeout(60_000);
+    await context
+      .addInitScript(() => {
+        Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+      })
+      .catch(() => {});
 
     if (!storageStateJson) {
       await loginFusionSolar(page, loginId, password, userId);
