@@ -45,6 +45,20 @@ function getMonthsInRange(startDate: Date, endDate: Date): string[] {
   return months;
 }
 
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out (${timeoutMs}ms)`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function loginFusionSolar(page: Page, loginId: string, password: string, userId: string) {
   // autoLogin の FusionSolar 手順に寄せる（SPA で要素出現が遅い）
   logger.info("fusionSolarCollector: navigating to login", { extra: { url: BASE_URL }, userId });
@@ -271,123 +285,136 @@ export async function runFusionSolarCollector(
           userId,
         });
 
-        await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
-        await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+        const allRows = await withTimeout(
+          (async () => {
+            await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
+            await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
 
-        // セッション切れ等でログイン画面に戻ることがあるため、必要なら再ログインしてから待つ
-        const needsRelogin =
-          (await page.locator("input#username").count()) > 0 &&
-          (await page.locator("input#username").first().isVisible().catch(() => false));
-        if (needsRelogin) {
-          logger.warn("fusionSolarCollector: relogin required before report page", {
-            userId,
-            extra: { url: page.url(), station: station.name },
-          });
-          await loginFusionSolar(page, loginId, password, userId);
-          await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
-          await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-        }
-
-        // ページ読み込み完了を待つ
-        await page.waitForSelector(".ant-picker-input input", { timeout: 90_000 });
-        await page.waitForTimeout(2000);
-
-        // 粒度を「月別」に切り替え（UI差異で候補が出ないケースがあるため、失敗しても継続）
-        const granularityEl = page.locator("span.ant-select-selection-item").first();
-        const currentTitle = (await granularityEl.getAttribute("title")) ?? "";
-        if (!currentTitle.includes("月別")) {
-          try {
-            await granularityEl.click();
-            await page.waitForTimeout(500);
-            const monthOptionByTitle = page.locator('.ant-select-item-option[title="月別"]').first();
-            const monthOptionByText = page.locator(".ant-select-item-option", { hasText: "月別" }).first();
-            if (await monthOptionByTitle.count()) {
-              await monthOptionByTitle.click({ timeout: 8_000 });
-            } else if (await monthOptionByText.count()) {
-              await monthOptionByText.click({ timeout: 8_000 });
-            } else {
-              logger.warn("fusionSolarCollector: 月別オプションが見つからないため既定粒度で継続", {
+            // セッション切れ等でログイン画面に戻ることがあるため、必要なら再ログインしてから待つ
+            const needsRelogin =
+              (await page.locator("input#username").count()) > 0 &&
+              (await page.locator("input#username").first().isVisible().catch(() => false));
+            if (needsRelogin) {
+              logger.warn("fusionSolarCollector: relogin required before report page", {
                 userId,
-                extra: { station: station.name, yearMonth, url: page.url(), currentTitle },
+                extra: { url: page.url(), station: station.name },
+              });
+              await loginFusionSolar(page, loginId, password, userId);
+              await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
+              await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+            }
+
+            // ページ読み込み完了を待つ
+            await page.waitForSelector(".ant-picker-input input", { timeout: 90_000 });
+            await page.waitForTimeout(2000);
+
+            // 粒度を「月別」に切り替え（UI差異で候補が出ないケースがあるため、失敗しても継続）
+            const granularityEl = page.locator("span.ant-select-selection-item").first();
+            const currentTitle = (await granularityEl.getAttribute("title")) ?? "";
+            if (!currentTitle.includes("月別")) {
+              try {
+                await granularityEl.click();
+                await page.waitForTimeout(500);
+                const monthOptionByTitle = page.locator('.ant-select-item-option[title="月別"]').first();
+                const monthOptionByText = page.locator(".ant-select-item-option", { hasText: "月別" }).first();
+                if (await monthOptionByTitle.count()) {
+                  await monthOptionByTitle.click({ timeout: 8_000 });
+                } else if (await monthOptionByText.count()) {
+                  await monthOptionByText.click({ timeout: 8_000 });
+                } else {
+                  logger.warn("fusionSolarCollector: 月別オプションが見つからないため既定粒度で継続", {
+                    userId,
+                    extra: { station: station.name, yearMonth, url: page.url(), currentTitle },
+                  });
+                }
+                await page.waitForTimeout(500);
+              } catch (e) {
+                logger.warn("fusionSolarCollector: 月別切替に失敗したため既定粒度で継続", {
+                  userId,
+                  extra: {
+                    station: station.name,
+                    yearMonth,
+                    url: page.url(),
+                    currentTitle,
+                    error: e instanceof Error ? e.message : String(e),
+                  },
+                });
+              }
+            }
+
+            // 統計期間に YYYY-MM を入力（既存値をクリアしてから入力）
+            const pickerInput = page.locator(".ant-picker-input input").first();
+            await pickerInput.click();
+            await pickerInput.selectText();
+            await pickerInput.fill(yearMonth);
+            await page.keyboard.press("Enter");
+            await page.waitForTimeout(500);
+
+            // 検索ボタンをクリックしてテーブル更新を待つ（UI差異で文言が変わるため複数候補）
+            let searchClicked = false;
+            const searchBtnCandidates = [
+              page.getByRole("button", { name: /検索|Search/i }).first(),
+              page.locator('button:has-text("検索")').first(),
+              page.locator('button:has-text("Search")').first(),
+              page.locator(".ant-btn-primary").first(),
+            ];
+            for (const btn of searchBtnCandidates) {
+              try {
+                if ((await btn.count()) > 0) {
+                  await btn.click({ timeout: 8_000 });
+                  searchClicked = true;
+                  break;
+                }
+              } catch {
+                // try next candidate
+              }
+            }
+            if (!searchClicked) {
+              // ボタンが取れない場合でも Enter で検索をトリガーして継続
+              await page.keyboard.press("Enter").catch(() => {});
+              logger.warn("fusionSolarCollector: 検索ボタンが見つからないため Enter で代替実行", {
+                userId,
+                extra: { station: station.name, yearMonth, url: page.url() },
               });
             }
-            await page.waitForTimeout(500);
-          } catch (e) {
-            logger.warn("fusionSolarCollector: 月別切替に失敗したため既定粒度で継続", {
-              userId,
-              extra: {
-                station: station.name,
-                yearMonth,
-                url: page.url(),
-                currentTitle,
-                error: e instanceof Error ? e.message : String(e),
-              },
-            });
-          }
-        }
+            await page.waitForSelector("table tbody tr", { timeout: 30000 }).catch(() => {});
+            await page.waitForTimeout(1500);
 
-        // 統計期間に YYYY-MM を入力（既存値をクリアしてから入力）
-        const pickerInput = page.locator(".ant-picker-input input").first();
-        await pickerInput.click();
-        await pickerInput.selectText();
-        await pickerInput.fill(yearMonth);
-        await page.keyboard.press("Enter");
-        await page.waitForTimeout(500);
-
-        // 検索ボタンをクリックしてテーブル更新を待つ（UI差異で文言が変わるため複数候補）
-        let searchClicked = false;
-        const searchBtnCandidates = [
-          page.getByRole("button", { name: /検索|Search/i }).first(),
-          page.locator('button:has-text("検索")').first(),
-          page.locator('button:has-text("Search")').first(),
-          page.locator(".ant-btn-primary").first(),
-        ];
-        for (const btn of searchBtnCandidates) {
-          try {
-            if ((await btn.count()) > 0) {
-              await btn.click({ timeout: 8_000 });
-              searchClicked = true;
-              break;
+            // ページネーション対応: 全ページのデータを収集
+            const rows: { dateStr: string; pcsKwhText: string }[] = [];
+            while (true) {
+              throwIfAllCollectCancelled(userId);
+              const pageRows = await page.$$eval("table tbody tr", (trs) =>
+                trs.map((tr) => {
+                  const tds = Array.from(tr.querySelectorAll("td"));
+                  const dateStr = (tds[0]?.textContent ?? "").trim();
+                  const pcsKwhText = (tds[2]?.textContent ?? "").trim();
+                  return { dateStr, pcsKwhText };
+                })
+              );
+              rows.push(...pageRows);
+              const nextBtn = page.locator("li.ant-pagination-next");
+              const isDisabled = await nextBtn.getAttribute("aria-disabled");
+              if (isDisabled === "true") break;
+              await nextBtn.click();
+              await page.waitForTimeout(1500);
             }
-          } catch {
-            // try next candidate
-          }
-        }
-        if (!searchClicked) {
-          // ボタンが取れない場合でも Enter で検索をトリガーして継続
-          await page.keyboard.press("Enter").catch(() => {});
-          logger.warn("fusionSolarCollector: 検索ボタンが見つからないため Enter で代替実行", {
+            return rows;
+          })(),
+          120_000,
+          `fusionSolarCollector station=${station.name} month=${yearMonth}`
+        ).catch((e) => {
+          logger.warn("fusionSolarCollector: station/month processing timed out or failed, skip", {
             userId,
-            extra: { station: station.name, yearMonth, url: page.url() },
+            extra: {
+              station: station.name,
+              yearMonth,
+              error: e instanceof Error ? e.message : String(e),
+            },
           });
-        }
-        await page.waitForSelector("table tbody tr", { timeout: 30000 }).catch(() => {});
-        await page.waitForTimeout(1500);
-
-        // ページネーション対応: 全ページのデータを収集
-        const allRows: { dateStr: string; pcsKwhText: string }[] = [];
-
-        while (true) {
-          throwIfAllCollectCancelled(userId);
-          // 現在ページのテーブル行を取得
-          const pageRows = await page.$$eval("table tbody tr", (trs) =>
-            trs.map((tr) => {
-              const tds = Array.from(tr.querySelectorAll("td"));
-              const dateStr = (tds[0]?.textContent ?? "").trim();
-              const pcsKwhText = (tds[2]?.textContent ?? "").trim();
-              return { dateStr, pcsKwhText };
-            })
-          );
-          allRows.push(...pageRows);
-
-          // 次ページボタンが存在して、かつ disabled でなければクリック
-          const nextBtn = page.locator("li.ant-pagination-next");
-          const isDisabled = await nextBtn.getAttribute("aria-disabled");
-          if (isDisabled === "true") break;
-
-          await nextBtn.click();
-          await page.waitForTimeout(1500);
-        }
+          errorCount++;
+          return [] as Array<{ dateStr: string; pcsKwhText: string }>;
+        });
 
         const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
         const site = await prisma.site.findFirst({
