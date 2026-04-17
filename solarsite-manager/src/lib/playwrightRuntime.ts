@@ -1,4 +1,8 @@
 import type { Browser } from "playwright-core";
+import { access, mkdir, open, stat, unlink } from "node:fs/promises";
+import { constants as FsConstants } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export function isVercelRuntime(): boolean {
   return process.env.VERCEL === "1" || process.env.VERCEL === "true";
@@ -29,6 +33,114 @@ type LaunchOpts = {
   extraArgs?: string[];
 };
 
+let vercelChromiumTaskChain: Promise<void> = Promise.resolve();
+
+async function runSerializedOnVercel<T>(task: () => Promise<T>): Promise<T> {
+  const run = async () => {
+    return await task();
+  };
+
+  const next = vercelChromiumTaskChain.then(run, run);
+  // 失敗してもチェーンを切らない（後続タスクが止まるのを防ぐ）
+  vercelChromiumTaskChain = next.then(
+    () => {},
+    () => {}
+  );
+  return await next;
+}
+
+const CHROMIUM_BIN = join(tmpdir(), "chromium");
+const CHROMIUM_BOOTSTRAP_LOCK = join(tmpdir(), "ene-sparticuz-chromium.bootstrap.lock");
+
+async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+async function isExecutableFile(path: string): Promise<boolean> {
+  try {
+    await access(path, FsConstants.F_OK | FsConstants.X_OK);
+    const s = await stat(path);
+    return s.isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Vercel の同時実行（別インスタンス）でも `/tmp/chromium` の生成競合を避けるための簡易ロック。
+ * ロック取得に失敗した場合は待機してから続行する。
+ */
+async function withVercelChromiumBootstrapLock<T>(task: () => Promise<T>): Promise<T> {
+  await mkdir(tmpdir(), { recursive: true }).catch(() => {});
+
+  const maxWaitMs = 15_000;
+  const start = Date.now();
+
+  // ロック取得（同一プロセス内でも安全）
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const fh = await open(CHROMIUM_BOOTSTRAP_LOCK, "wx");
+      try {
+        return await task();
+      } finally {
+        await fh.close().catch(() => {});
+        await unlink(CHROMIUM_BOOTSTRAP_LOCK).catch(() => {});
+      }
+    } catch {
+      if (Date.now() - start > maxWaitMs) {
+        return await task();
+      }
+      await sleep(50 + Math.floor(Math.random() * 50));
+    }
+  }
+}
+
+async function resolveSparticuzExecutablePath(): Promise<string> {
+  const chromiumMod = await import("@sparticuz/chromium");
+  const chromium = chromiumMod.default ?? chromiumMod;
+
+  // `/tmp/chromium` が存在しても不完全な中間状態があり得るため、実行可能でなければ削除して再生成させる
+  const exists = await isExecutableFile(CHROMIUM_BIN);
+  if (!exists) {
+    await unlink(CHROMIUM_BIN).catch(() => {});
+  }
+
+  return await chromium.executablePath();
+}
+
+async function launchWithRetries(
+  launchOnce: () => Promise<Browser>,
+  attempts = 5
+): Promise<Browser> {
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await launchOnce();
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const retryable = msg.includes("ETXTBSY") || msg.includes("Text file busy");
+      if (!retryable || i === attempts - 1) break;
+      await sleep(100 * (i + 1) + Math.floor(Math.random() * 75));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * Vercel 上で複数コレクターが同時に Chromium を起動すると、/tmp 配下の実行ファイル競合で
+ * `spawn ETXTBSY` が発生することがあるため、起動処理を直列化する。
+ */
+export async function prewarmVercelChromiumExecutable(): Promise<void> {
+  if (!isVercelRuntime()) return;
+  await runSerializedOnVercel(async () => {
+    await withVercelChromiumBootstrapLock(async () => {
+      await resolveSparticuzExecutablePath();
+    });
+  });
+}
+
 /**
  * Vercel 本番では Playwright の同梱ブラウザが無いため @sparticuz/chromium を使う。
  * ローカルでは通常の Chromium を起動する。
@@ -38,15 +150,21 @@ export async function launchChromiumForRuntime(opts: LaunchOpts = {}): Promise<B
   const headless = opts.headless ?? true;
 
   if (isVercelRuntime()) {
-    const chromiumMod = await import("@sparticuz/chromium");
-    const chromium = chromiumMod.default ?? chromiumMod;
-    const executablePath = await chromium.executablePath();
-    const args = mergeChromiumArgs(chromium.args, opts.extraArgs);
-    return await pw.chromium.launch({
-      executablePath,
-      args,
-      headless,
-      slowMo: opts.slowMoMs,
+    return await runSerializedOnVercel(async () => {
+      return await withVercelChromiumBootstrapLock(async () => {
+        const executablePath = await resolveSparticuzExecutablePath();
+        const chromiumMod = await import("@sparticuz/chromium");
+        const chromium = chromiumMod.default ?? chromiumMod;
+        const args = mergeChromiumArgs(chromium.args, opts.extraArgs);
+        return await launchWithRetries(() =>
+          pw.chromium.launch({
+            executablePath,
+            args,
+            headless,
+            slowMo: opts.slowMoMs,
+          })
+        );
+      });
     });
   }
 
