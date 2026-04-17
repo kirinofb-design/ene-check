@@ -3,6 +3,8 @@ import { requireAuth } from "@/lib/auth";
 import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 
+export const maxDuration = 300;
+
 export async function POST(req: Request) {
   try {
     const session = await requireAuth(req);

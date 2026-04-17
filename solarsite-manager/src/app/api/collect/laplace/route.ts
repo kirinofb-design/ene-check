@@ -4,6 +4,8 @@ import { handleApiError } from "@/lib/apiError";
 import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 
+export const maxDuration = 300;
+
 export async function POST(request: Request) {
   try {
     const session = await requireAuth(request);
