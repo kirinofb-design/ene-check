@@ -334,8 +334,33 @@ export async function runFusionSolarCollector(
         await page.keyboard.press("Enter");
         await page.waitForTimeout(500);
 
-        // 検索ボタンをクリックしてテーブル更新を待つ
-        await page.getByRole("button", { name: "検索" }).click();
+        // 検索ボタンをクリックしてテーブル更新を待つ（UI差異で文言が変わるため複数候補）
+        let searchClicked = false;
+        const searchBtnCandidates = [
+          page.getByRole("button", { name: /検索|Search/i }).first(),
+          page.locator('button:has-text("検索")').first(),
+          page.locator('button:has-text("Search")').first(),
+          page.locator(".ant-btn-primary").first(),
+        ];
+        for (const btn of searchBtnCandidates) {
+          try {
+            if ((await btn.count()) > 0) {
+              await btn.click({ timeout: 8_000 });
+              searchClicked = true;
+              break;
+            }
+          } catch {
+            // try next candidate
+          }
+        }
+        if (!searchClicked) {
+          // ボタンが取れない場合でも Enter で検索をトリガーして継続
+          await page.keyboard.press("Enter").catch(() => {});
+          logger.warn("fusionSolarCollector: 検索ボタンが見つからないため Enter で代替実行", {
+            userId,
+            extra: { station: station.name, yearMonth, url: page.url() },
+          });
+        }
         await page.waitForSelector("table tbody tr", { timeout: 30000 }).catch(() => {});
         await page.waitForTimeout(1500);
 
