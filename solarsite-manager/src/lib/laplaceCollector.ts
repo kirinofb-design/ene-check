@@ -378,13 +378,27 @@ async function loginLaplace(page: any, loginId: string, password: string) {
 
   logger.info("laplaceCollector: after login", { extra: { url: page.url(), title: await page.title() } });
 
+  const pwVisible = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
+  const loginBtnStill = await page.getByRole("button", { name: /ログイン|Login/i }).first().isVisible().catch(() => false);
   const loginContainer = page.locator(".loginContainer").first();
-  const stillLogin = (await loginContainer.count()) > 0 && (await loginContainer.isVisible().catch(() => false));
+  const loginContainerVisible =
+    (await loginContainer.count()) > 0 && (await loginContainer.isVisible().catch(() => false));
+  const stillLogin = loginContainerVisible || pwVisible || loginBtnStill;
+
   if (stillLogin) {
     const bodySnippet = (await page.locator("body").innerText().catch(() => "")).slice(0, 1200);
     logger.warn("laplaceCollector: login container still visible", {
       extra: { url: page.url(), bodySnippet: bodySnippet.replace(/\s+/g, " ").trim() },
     });
+
+    const lower = bodySnippet.toLowerCase();
+    if (bodySnippet.includes("パスワード") && (bodySnippet.includes("誤り") || bodySnippet.includes("不正"))) {
+      throw new Error("ラプラス: ログインに失敗しました（ID/パスワード誤りの可能性が高いです）。/settings の認証情報を確認してください。");
+    }
+    if (lower.includes("captcha") || bodySnippet.includes("画像認証")) {
+      throw new Error("ラプラス: ログイン画面で追加認証（CAPTCHA 等）が要求されています。手動ログインで突破後に再実行してください。");
+    }
+
     throw new Error(
       "ラプラス: ログイン後もログイン画面のままです。ID/パスワード・利用規約の同意を確認してください。"
     );

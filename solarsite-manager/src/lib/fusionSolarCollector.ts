@@ -65,74 +65,90 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
 
   const start = Date.now();
   const hardTimeoutMs = 45_000;
+  let idFilled = false;
+  let pwFilled = false;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     if (Date.now() - start > hardTimeoutMs) {
       throw new Error("FusionSolar: ログインフォームの入力欄が表示されませんでした（タイムアウト）。");
     }
 
-    for (const sel of idSelCandidates) {
-      const loc = page.locator(sel).first();
-      if (await loc.count()) {
-        const visible = await loc.isVisible().catch(() => false);
-        if (visible) {
-          await loc.fill(loginId);
-          break;
+    if (!idFilled) {
+      for (const sel of idSelCandidates) {
+        const loc = page.locator(sel).first();
+        if (await loc.count()) {
+          const visible = await loc.isVisible().catch(() => false);
+          if (visible) {
+            await loc.fill(loginId);
+            idFilled = true;
+            break;
+          }
         }
       }
     }
 
-    for (const sel of pwSelCandidates) {
-      const loc = page.locator(sel).first();
-      if (await loc.count()) {
-        const visible = await loc.isVisible().catch(() => false);
-        if (visible) {
-          await loc.fill(password);
-          break;
+    if (!pwFilled) {
+      for (const sel of pwSelCandidates) {
+        const loc = page.locator(sel).first();
+        if (await loc.count()) {
+          const visible = await loc.isVisible().catch(() => false);
+          if (visible) {
+            await loc.fill(password);
+            pwFilled = true;
+            break;
+          }
         }
       }
     }
 
-    let clicked = false;
-    for (const sel of loginBtnCandidates) {
-      const loc = page.locator(sel).first();
-      if (await loc.count()) {
-        const visible = await loc.isVisible().catch(() => false);
-        if (visible) {
-          await loc.click();
-          clicked = true;
-          break;
-        }
-      }
-    }
-
-    if (clicked) break;
+    if (idFilled && pwFilled) break;
     await page.waitForTimeout(250);
   }
 
-  await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
+  if (!idFilled || !pwFilled) {
+    throw new Error("FusionSolar: ログインID/パスワード入力に失敗しました。");
+  }
 
-  // ログイン完了の目安: パスワード欄が消える / pvmswebsite に入る / ログインボタンが無効化 など
+  let loginBtn: ReturnType<Page["locator"]> | null = null;
+  for (const sel of loginBtnCandidates) {
+    const loc = page.locator(sel).first();
+    if (await loc.count()) {
+      const visible = await loc.isVisible().catch(() => false);
+      if (visible) {
+        loginBtn = loc;
+        break;
+      }
+    }
+  }
+  if (!loginBtn) {
+    throw new Error("FusionSolar: ログインボタンが見つかりません。");
+  }
+  await loginBtn.waitFor({ state: "visible", timeout: 20_000 });
+
+  const urlLooksLoggedIn = (u: URL) => {
+    const href = u.toString();
+    const lower = href.toLowerCase();
+    if (href.includes("/unisso/login")) return false;
+    if (lower.includes("#/login")) return false;
+    if (lower.includes("/login") && lower.includes("unisso")) return false;
+    if (href.includes("/netecowebext/")) return true;
+    if (href.includes("/pvmswebsite/")) return true;
+    if (href.includes("/netecowebext/home")) return true;
+    return false;
+  };
+
   try {
-    await page.waitForFunction(
-      () => {
-        const pw = document.querySelector('input[type="password"]') as HTMLInputElement | null;
-        const href = location.href;
-        if (href.includes("pvmswebsite")) return true;
-        if (!pw) return true;
-        const r = pw.getBoundingClientRect();
-        const hidden = r.width === 0 || r.height === 0;
-        const style = window.getComputedStyle(pw);
-        const offscreen = style.display === "none" || style.visibility === "hidden" || style.opacity === "0";
-        return hidden || offscreen;
-      },
-      { timeout: 60_000 }
-    );
+    await Promise.all([
+      page.waitForURL(urlLooksLoggedIn, { timeout: 120_000 }),
+      loginBtn.click(),
+    ]);
   } catch {
     const url = page.url();
     const title = await page.title().catch(() => "(title取得失敗)");
     throw new Error(`FusionSolar: ログイン完了を確認できませんでした（url=${url}, title=${title}）。`);
   }
+
+  await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
 }
 
 // FusionSolar の画面上の発電所名称と DB の Site.siteName のマッピング
