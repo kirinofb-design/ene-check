@@ -50,18 +50,19 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
 
   const idSelCandidates = [
-    'input[type="text"]',
+    "input#username",
+    'input[name="username"]',
+    'input[name*="user" i]',
     'input[placeholder*="ユーザー" i]',
     'input[placeholder*="User" i]',
-    'input[name*="user" i]',
-    'input#username',
+    'input[type="text"]',
   ];
-  const pwSelCandidates = ['input[type="password"]', 'input#value'];
+  const pwSelCandidates = ['input#value', 'input[name="password"]', 'input[type="password"]'];
   const loginBtnCandidates = [
+    "#btn_outerverify",
     'button:has-text("ログイン")',
     'button:has-text("Login")',
     'button[type="submit"]',
-    "#btn_outerverify",
   ];
 
   const start = Date.now();
@@ -107,7 +108,7 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
   }
 
   if (!idFilled || !pwFilled) {
-    throw new Error("FusionSolar: ログインID/パスワード入力に失敗しました。");
+    throw new Error("FusionSolar: ログインID/パスワード入力に失敗しました（入力欄の特定に失敗）。");
   }
 
   let loginBtn: ReturnType<Page["locator"]> | null = null;
