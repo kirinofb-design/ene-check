@@ -292,14 +292,38 @@ export async function runFusionSolarCollector(
         await page.waitForSelector(".ant-picker-input input", { timeout: 90_000 });
         await page.waitForTimeout(2000);
 
-        // 粒度を「月別」に切り替え（文字化け回避のため title 属性で直接指定）
+        // 粒度を「月別」に切り替え（UI差異で候補が出ないケースがあるため、失敗しても継続）
         const granularityEl = page.locator("span.ant-select-selection-item").first();
-        const currentTitle = await granularityEl.getAttribute("title");
-        if (currentTitle !== "月別") {
-          await granularityEl.click();
-          await page.waitForTimeout(800);
-          await page.locator('.ant-select-item-option[title="月別"]').click();
-          await page.waitForTimeout(800);
+        const currentTitle = (await granularityEl.getAttribute("title")) ?? "";
+        if (!currentTitle.includes("月別")) {
+          try {
+            await granularityEl.click();
+            await page.waitForTimeout(500);
+            const monthOptionByTitle = page.locator('.ant-select-item-option[title="月別"]').first();
+            const monthOptionByText = page.locator(".ant-select-item-option", { hasText: "月別" }).first();
+            if (await monthOptionByTitle.count()) {
+              await monthOptionByTitle.click({ timeout: 8_000 });
+            } else if (await monthOptionByText.count()) {
+              await monthOptionByText.click({ timeout: 8_000 });
+            } else {
+              logger.warn("fusionSolarCollector: 月別オプションが見つからないため既定粒度で継続", {
+                userId,
+                extra: { station: station.name, yearMonth, url: page.url(), currentTitle },
+              });
+            }
+            await page.waitForTimeout(500);
+          } catch (e) {
+            logger.warn("fusionSolarCollector: 月別切替に失敗したため既定粒度で継続", {
+              userId,
+              extra: {
+                station: station.name,
+                yearMonth,
+                url: page.url(),
+                currentTitle,
+                error: e instanceof Error ? e.message : String(e),
+              },
+            });
+          }
         }
 
         // 統計期間に YYYY-MM を入力（既存値をクリアしてから入力）
