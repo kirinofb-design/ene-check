@@ -217,7 +217,6 @@ export async function runFusionSolarCollector(
     if (Number.isFinite(raw) && raw > 30_000) return Math.min(raw, 295_000);
     return DEFAULT_WALL_BUDGET_MS;
   })();
-  const wallStarted = Date.now();
 
   const browser = await launchChromiumForRuntime({
     headless: true,
@@ -266,6 +265,9 @@ export async function runFusionSolarCollector(
     if (!storageStateJson) {
       await loginFusionSolar(page, loginId, password, userId);
     }
+
+    // ブラウザ起動・ログインは時間がかかるため、壁時計は「発電所×月」ループ開始時点から計測する
+    const wallStarted = Date.now();
 
     const months = getMonthsInRange(start, end);
 
