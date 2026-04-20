@@ -174,6 +174,51 @@ const FUSION_SOLAR_DISPLAY_NAME_MAP: Record<string, string> = {
   "フジ物産御前崎市佐倉高圧発電所": "佐倉（高圧）",
 };
 
+async function orderStationsByCoverage(
+  stations: Array<{ name: string; ne: string }>,
+  start: Date,
+  end: Date,
+  userId: string
+): Promise<Array<{ name: string; ne: string }>> {
+  const scored = await Promise.all(
+    stations.map(async (station, idx) => {
+      const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
+      const site = await prisma.site.findFirst({
+        where: { siteName: mappedName },
+        select: { id: true },
+      });
+      if (!site) return { station, idx, count: -1 };
+      const count = await prisma.dailyGeneration.count({
+        where: {
+          siteId: site.id,
+          date: { gte: start, lte: end },
+        },
+      });
+      return { station, idx, count };
+    })
+  );
+
+  scored.sort((a, b) => {
+    // countが少ない（未取得が多い）発電所から優先。未マッピングは最後に回す。
+    const ca = a.count < 0 ? Number.MAX_SAFE_INTEGER : a.count;
+    const cb = b.count < 0 ? Number.MAX_SAFE_INTEGER : b.count;
+    if (ca !== cb) return ca - cb;
+    return a.idx - b.idx;
+  });
+
+  logger.info("fusionSolarCollector: station order optimized by coverage", {
+    userId,
+    extra: {
+      order: scored.map((s) => ({
+        station: s.station.name,
+        existingCount: s.count,
+      })),
+    },
+  });
+
+  return scored.map((s) => s.station);
+}
+
 export async function runFusionSolarCollector(
   userId: string,
   startDate: string,
@@ -271,9 +316,10 @@ export async function runFusionSolarCollector(
     const wallStarted = Date.now();
 
     const months = getMonthsInRange(start, end);
+    const stations = await orderStationsByCoverage(FUSION_SOLAR_STATIONS, start, end, userId);
 
     // 発電所ごと × 月ごとにループ
-    for (const station of FUSION_SOLAR_STATIONS) {
+    for (const station of stations) {
       throwIfAllCollectCancelled(userId);
       const stationReportUrl = STATION_REPORT_URL_TEMPLATE.replace("{ne}", station.ne);
 
