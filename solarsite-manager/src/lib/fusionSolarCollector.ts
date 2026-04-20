@@ -10,8 +10,7 @@ const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
 
 /** Vercel の maxDuration（例: 300s）を超えると 504 になるため、余裕を見て処理を打ち切る */
-const DEFAULT_WALL_BUDGET_MS = 280_000;
-const STATION_MONTH_HARD_MAX_MS = 120_000;
+const DEFAULT_WALL_BUDGET_MS = 295_000;
 
 const FUSION_SOLAR_STATIONS = [
   { name: "フジHD湖西発電所", ne: "33652418" },
@@ -47,20 +46,6 @@ function getMonthsInRange(startDate: Date, endDate: Date): string[] {
     months.push(`${y}-${m}`);
   }
   return months;
-}
-
-async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      task,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out (${timeoutMs}ms)`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 async function loginFusionSolar(page: Page, loginId: string, password: string, userId: string) {
@@ -301,10 +286,8 @@ export async function runFusionSolarCollector(
             errorCount,
           };
         }
-        const stepTimeoutMs = Math.min(STATION_MONTH_HARD_MAX_MS, Math.max(10_000, remaining - 5000));
-
         logger.info("fusionSolarCollector: station + month", {
-          extra: { station: station.name, ne: station.ne, yearMonth, stepTimeoutMs },
+          extra: { station: station.name, ne: station.ne, yearMonth, remaining },
           userId,
         });
 
@@ -424,11 +407,10 @@ export async function runFusionSolarCollector(
             return rows;
         };
 
-        const allRows = await withTimeout(
-          collectRows(),
-          stepTimeoutMs,
-          `fusionSolarCollector station=${station.name} month=${yearMonth}`
-        ).catch(async (firstErr) => {
+        let allRows: Array<{ dateStr: string; pcsKwhText: string }> = [];
+        try {
+          allRows = await collectRows();
+        } catch (firstErr) {
           logger.warn("fusionSolarCollector: station/month first attempt failed, retry with relogin", {
             userId,
             extra: {
@@ -441,17 +423,12 @@ export async function runFusionSolarCollector(
           const retryRemaining = wallBudgetMs - (Date.now() - wallStarted);
           if (retryRemaining < 20_000) {
             errorCount++;
-            return [] as Array<{ dateStr: string; pcsKwhText: string }>;
+            continue;
           }
 
           try {
             await loginFusionSolar(page, loginId, password, userId);
-            const retryTimeoutMs = Math.min(45_000, Math.max(10_000, retryRemaining - 5_000));
-            return await withTimeout(
-              collectRows(),
-              retryTimeoutMs,
-              `fusionSolarCollector retry station=${station.name} month=${yearMonth}`
-            );
+            allRows = await collectRows();
           } catch (retryErr) {
             logger.warn("fusionSolarCollector: station/month retry failed, skip", {
               userId,
@@ -462,9 +439,9 @@ export async function runFusionSolarCollector(
               },
             });
             errorCount++;
-            return [] as Array<{ dateStr: string; pcsKwhText: string }>;
+            continue;
           }
-        });
+        }
 
         const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
         const site = await prisma.site.findFirst({
