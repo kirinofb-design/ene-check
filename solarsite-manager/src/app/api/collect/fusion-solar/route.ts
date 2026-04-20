@@ -3,6 +3,7 @@ import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
 import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
+import { ensureDbReachable } from "@/lib/ensureDbReachable";
 
 export const maxDuration = 300;
 
@@ -23,6 +24,20 @@ export async function POST(request: Request) {
     };
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
+
+    try {
+      await ensureDbReachable(5);
+    } catch {
+      return NextResponse.json(
+        {
+          ok: false,
+          message: "データベース接続に失敗しました。数秒待ってから再実行してください。",
+          recordCount: 0,
+          errorCount: 0,
+        },
+        { status: 503 }
+      );
+    }
 
     const lock = acquireCollectorLock(userId, "fusion-solar");
     if (!lock.ok) {

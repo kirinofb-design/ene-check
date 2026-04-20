@@ -12,6 +12,7 @@ import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
 import { acquireCollectorLock, isCollectorCancelRequested, releaseCollectorLock } from "@/lib/collectorLock";
 import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
+import { ensureDbReachable } from "@/lib/ensureDbReachable";
 
 type CollectorStepResult = {
   key: string;
@@ -65,26 +66,6 @@ async function applyPostCollectOverrides(startDate: string, endDate: string): Pr
   if (ops.length > 0) {
     await prisma.$transaction(ops);
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function ensureDbReachable(retries = 3): Promise<void> {
-  let lastError: unknown = null;
-  for (let i = 0; i < retries; i++) {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-      return;
-    } catch (e) {
-      lastError = e;
-      if (i < retries - 1) {
-        await sleep(1200 * (i + 1));
-      }
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("Database unreachable");
 }
 
 async function runNamedCollector(
