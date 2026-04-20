@@ -58,7 +58,10 @@ export default function DataCollectSection() {
     return `${head}\n\n──────── システム別（失敗を上に表示）────────\n\n${lines.join("\n\n")}`;
   };
 
-  const resolveApiMessage = (data: unknown, fallback: string): string => {
+  const resolveApiMessage = (data: unknown, fallback: string, httpStatus?: number): string => {
+    if (httpStatus === 504) {
+      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。FusionSolarなど重い処理は発電所×月のため時間がかかります。開始日・終了日を短く分けて試すか、混雑していない時間帯に再実行してください。";
+    }
     if (data && typeof data === "object") {
       const d = data as {
         message?: unknown;
@@ -111,7 +114,8 @@ export default function DataCollectSection() {
 
       const message = resolveApiMessage(
         data,
-        response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`
+        response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
+        response.status
       );
       if (data && typeof data === "object" && (data as { ok?: boolean }).ok) {
         alert(`${systemName}: ${message}`);
@@ -141,7 +145,8 @@ export default function DataCollectSection() {
       }
       const msg = resolveApiMessage(
         data,
-        res.ok ? "実行取消を受け付けました。" : `APIエラーが発生しました（HTTP ${res.status}）`
+        res.ok ? "実行取消を受け付けました。" : `APIエラーが発生しました（HTTP ${res.status}）`,
+        res.status
       );
       alert(msg);
     } catch {

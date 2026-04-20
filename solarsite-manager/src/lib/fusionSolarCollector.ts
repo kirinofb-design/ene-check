@@ -9,6 +9,10 @@ import type { Page } from "playwright-core";
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
 
+/** Vercel の maxDuration（例: 300s）を超えると 504 になるため、余裕を見て処理を打ち切る */
+const DEFAULT_WALL_BUDGET_MS = 250_000;
+const STATION_MONTH_HARD_MAX_MS = 120_000;
+
 const FUSION_SOLAR_STATIONS = [
   { name: "フジHD湖西発電所", ne: "33652418" },
   { name: "フジHD袋井市豊住高圧発電所", ne: "34130688" },
@@ -223,6 +227,13 @@ export async function runFusionSolarCollector(
   const loginId = cred.loginId;
   const password = decryptSecret(cred.encryptedPassword);
 
+  const wallBudgetMs = (() => {
+    const raw = Number(process.env.FUSION_SOLAR_COLLECT_BUDGET_MS);
+    if (Number.isFinite(raw) && raw > 30_000) return Math.min(raw, 295_000);
+    return DEFAULT_WALL_BUDGET_MS;
+  })();
+  const wallStarted = Date.now();
+
   const browser = await launchChromiumForRuntime({
     headless: true,
     extraArgs: ["--disable-blink-features=AutomationControlled"],
@@ -280,6 +291,18 @@ export async function runFusionSolarCollector(
 
       for (const yearMonth of months) {
         throwIfAllCollectCancelled(userId);
+        const elapsed = Date.now() - wallStarted;
+        const remaining = wallBudgetMs - elapsed;
+        if (remaining < 15_000) {
+          return {
+            ok: true,
+            message: `FusionSolarの取得を実行時間の上限のためここまでにしました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。発電所×月の処理が重いため、開始日・終了日の範囲を短く分けて再実行してください。`,
+            recordCount,
+            errorCount,
+          };
+        }
+        const stepTimeoutMs = Math.min(STATION_MONTH_HARD_MAX_MS, Math.max(10_000, remaining - 5000));
+
         logger.info("fusionSolarCollector: station + month", {
           extra: { station: station.name, ne: station.ne, yearMonth },
           userId,
@@ -401,7 +424,7 @@ export async function runFusionSolarCollector(
             }
             return rows;
           })(),
-          120_000,
+          stepTimeoutMs,
           `fusionSolarCollector station=${station.name} month=${yearMonth}`
         ).catch((e) => {
           logger.warn("fusionSolarCollector: station/month processing timed out or failed, skip", {

@@ -38,6 +38,16 @@ export function FusionSolarCollectSection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ startDate, endDate }),
       });
+      if (res.status === 504) {
+        setResult({
+          ok: false,
+          message:
+            "サーバーが応答するまでに時間がかかりすぎました（タイムアウト）。期間を短く分けて再実行するか、時間帯を変えて試してください。",
+          recordCount: 0,
+          errorCount: 0,
+        });
+        return;
+      }
       const json = (await res.json()) as {
         ok?: boolean;
         message?: string;
