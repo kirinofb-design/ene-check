@@ -76,6 +76,8 @@ export default function DataCollectSection() {
     }
     return fallback;
   };
+  const isFusionSolarCappedMessage = (message: string): boolean =>
+    message.includes("実行時間の上限") || message.includes("ここまでにしました");
 
   const handleCollect = async (systemName: string) => {
     if (systemName === "all" && allLocked) {
@@ -85,21 +87,56 @@ export default function DataCollectSection() {
     setLoading(systemName);
     try {
       const endpoint = endpointBySystem[systemName] ?? "/api/collect/all";
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          startDate: range.startDate,
-          endDate: range.endDate,
-          system: systemName,
-        }),
-      });
+      const maxFusionAttempts = systemName === "FusionSolar" ? 4 : 1;
+      let attempt = 0;
+      let totalRecordCount = 0;
+      let totalErrorCount = 0;
+      let response: Response | null = null;
       let data: unknown = null;
-      try {
-        data = await response.json();
-      } catch {
-        const text = await response.text().catch(() => "");
-        data = { message: text || null };
+      while (attempt < maxFusionAttempts) {
+        attempt++;
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            startDate: range.startDate,
+            endDate: range.endDate,
+            system: systemName,
+          }),
+        });
+        try {
+          data = await response.json();
+        } catch {
+          const text = await response.text().catch(() => "");
+          data = { message: text || null };
+        }
+        if (systemName !== "FusionSolar") break;
+        const oneRecordCount =
+          data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
+            ? (data as { recordCount: number }).recordCount
+            : 0;
+        const oneErrorCount =
+          data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
+            ? (data as { errorCount: number }).errorCount
+            : 0;
+        totalRecordCount += oneRecordCount;
+        totalErrorCount += oneErrorCount;
+        const msg = resolveApiMessage(
+          data,
+          response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
+          response.status
+        );
+        const canContinue =
+          response.ok &&
+          data &&
+          typeof data === "object" &&
+          Boolean((data as { ok?: boolean }).ok) &&
+          isFusionSolarCappedMessage(msg);
+        if (!canContinue) break;
+      }
+      if (!response) {
+        alert(`${systemName}の通信に失敗しました`);
+        return;
       }
 
       if (
@@ -118,7 +155,13 @@ export default function DataCollectSection() {
         response.status
       );
       if (data && typeof data === "object" && (data as { ok?: boolean }).ok) {
-        alert(`${systemName}: ${message}`);
+        if (systemName === "FusionSolar" && maxFusionAttempts > 1 && attempt > 1) {
+          alert(
+            `${systemName}: ${message}\n（自動再実行 ${attempt} 回 / 累計 保存 ${totalRecordCount} 件・スキップ ${totalErrorCount} 件）`
+          );
+        } else {
+          alert(`${systemName}: ${message}`);
+        }
       } else {
         alert(`${systemName}のエラー: ${message}`);
       }

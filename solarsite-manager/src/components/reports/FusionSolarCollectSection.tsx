@@ -28,44 +28,76 @@ export function FusionSolarCollectSection() {
     recordCount: number;
     errorCount: number;
   } | null>(null);
+  const isCappedMessage = (message: string): boolean =>
+    message.includes("実行時間の上限") || message.includes("ここまでにしました");
 
   async function run() {
     setLoading(true);
     setResult(null);
     try {
-      const res = await fetch("/api/collect/fusion-solar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startDate, endDate }),
-      });
-      if (res.status === 504) {
-        setResult({
-          ok: false,
-          message:
-            "サーバーが応答するまでに時間がかかりすぎました（タイムアウト）。期間を短く分けて再実行するか、時間帯を変えて試してください。",
-          recordCount: 0,
-          errorCount: 0,
-        });
-        return;
-      }
-      const json = (await res.json()) as {
+      const maxAttempts = 4;
+      let attempt = 0;
+      let totalRecordCount = 0;
+      let totalErrorCount = 0;
+      let lastRes: Response | null = null;
+      let json: {
         ok?: boolean;
         message?: string;
         recordCount?: number;
         errorCount?: number;
         error?: { message?: string };
-      };
-      const ok = res.ok && json?.ok === true;
-      setResult({
-        ok,
-        message:
+      } = {};
+      while (attempt < maxAttempts) {
+        attempt++;
+        const res = await fetch("/api/collect/fusion-solar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ startDate, endDate }),
+        });
+        lastRes = res;
+        if (res.status === 504) {
+          setResult({
+            ok: false,
+            message:
+              "サーバーが応答するまでに時間がかかりすぎました（タイムアウト）。期間を短く分けて再実行するか、時間帯を変えて試してください。",
+            recordCount: 0,
+            errorCount: 0,
+          });
+          return;
+        }
+        json = (await res.json()) as {
+          ok?: boolean;
+          message?: string;
+          recordCount?: number;
+          errorCount?: number;
+          error?: { message?: string };
+        };
+        totalRecordCount += typeof json?.recordCount === "number" ? json.recordCount : 0;
+        totalErrorCount += typeof json?.errorCount === "number" ? json.errorCount : 0;
+        const message =
           typeof json?.message === "string"
             ? json.message
             : typeof json?.error?.message === "string"
               ? json.error.message
-              : "実行に失敗しました。",
-        recordCount: typeof json?.recordCount === "number" ? json.recordCount : 0,
-        errorCount: typeof json?.errorCount === "number" ? json.errorCount : 0,
+              : "実行に失敗しました。";
+        const canContinue = res.ok && json?.ok === true && isCappedMessage(message);
+        if (!canContinue) break;
+      }
+      const ok = Boolean(lastRes?.ok) && json?.ok === true;
+      const baseMessage =
+        typeof json?.message === "string"
+          ? json.message
+          : typeof json?.error?.message === "string"
+            ? json.error.message
+            : "実行に失敗しました。";
+      setResult({
+        ok,
+        message:
+          attempt > 1
+            ? `${baseMessage}（自動再実行 ${attempt} 回 / 累計 保存 ${totalRecordCount} 件・スキップ ${totalErrorCount} 件）`
+            : baseMessage,
+        recordCount: attempt > 1 ? totalRecordCount : typeof json?.recordCount === "number" ? json.recordCount : 0,
+        errorCount: attempt > 1 ? totalErrorCount : typeof json?.errorCount === "number" ? json.errorCount : 0,
       });
     } catch {
       setResult({
