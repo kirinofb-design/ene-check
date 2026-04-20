@@ -22,6 +22,7 @@ const FUSION_SOLAR_STATIONS = [
   { name: "フジ物産掛川市浜野高圧発電所", ne: "33558911" },
   { name: "フジ物産御前崎市佐倉高圧発電所", ne: "33559317" },
 ];
+const MAX_TABLE_PAGES_PER_STATION_MONTH = 20;
 
 function isYmd(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -387,10 +388,12 @@ export async function runFusionSolarCollector(
             await page.waitForSelector("table tbody tr", { timeout: 30000 }).catch(() => {});
             await page.waitForTimeout(1500);
 
-            // ページネーション対応: 全ページのデータを収集
+            // ページネーション対応: 日付範囲外になったら早期打ち切りして高速化する
             const rows: { dateStr: string; pcsKwhText: string }[] = [];
+            let pageCount = 0;
             while (true) {
               throwIfAllCollectCancelled(userId);
+              pageCount += 1;
               const pageRows = await page.$$eval("table tbody tr", (trs) =>
                 trs.map((tr) => {
                   const tds = Array.from(tr.querySelectorAll("td"));
@@ -399,12 +402,30 @@ export async function runFusionSolarCollector(
                   return { dateStr, pcsKwhText };
                 })
               );
-              rows.push(...pageRows);
+              for (const r of pageRows) {
+                const dt = parseYmdToUtcDate(r.dateStr.replace(/\//g, "-").trim());
+                if (!dt) continue;
+                if (dt.getTime() > end.getTime()) continue;
+                if (dt.getTime() < start.getTime()) {
+                  // テーブルは新しい日付順のため、開始日より古くなったら以降は不要
+                  return rows;
+                }
+                rows.push(r);
+              }
+
+              if (pageCount >= MAX_TABLE_PAGES_PER_STATION_MONTH) {
+                logger.warn("fusionSolarCollector: max pagination pages reached, stop paging", {
+                  userId,
+                  extra: { station: station.name, yearMonth, pageCount },
+                });
+                break;
+              }
+
               const nextBtn = page.locator("li.ant-pagination-next");
               const isDisabled = await nextBtn.getAttribute("aria-disabled");
               if (isDisabled === "true") break;
               await nextBtn.click();
-              await page.waitForTimeout(1500);
+              await page.waitForTimeout(600);
             }
             return rows;
         };
