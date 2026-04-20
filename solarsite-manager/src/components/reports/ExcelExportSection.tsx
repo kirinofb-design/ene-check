@@ -16,8 +16,22 @@ export default function ExcelExportSection() {
     try {
       const res = await fetch(`/api/reports/export-excel?month=${encodeURIComponent(targetMonth)}`);
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "Excel の生成に失敗しました。");
+        let message = `Excel の生成に失敗しました。（HTTP ${res.status}）`;
+        try {
+          const data = (await res.json()) as {
+            error?: { code?: string; message?: string };
+            message?: string;
+          };
+          if (typeof data?.error?.message === "string" && data.error.message.trim()) {
+            message = data.error.message;
+          } else if (typeof data?.message === "string" && data.message.trim()) {
+            message = data.message;
+          }
+        } catch {
+          const text = await res.text().catch(() => "");
+          if (text.trim()) message = text;
+        }
+        throw new Error(message);
       }
 
       const blob = await res.blob();

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
+import { ensureDbReachable } from "@/lib/ensureDbReachable";
 import { utils, write } from "xlsx";
 
 function systemLabel(monitoringSystem: string): string {
@@ -87,6 +88,7 @@ function listDates(start: Date, end: Date): string[] {
 export async function GET(request: Request) {
   try {
     await requireAuth(request);
+    await ensureDbReachable(5);
 
     const { searchParams } = new URL(request.url);
     const monthParam = parseMonthParam(searchParams.get("month"));
@@ -103,26 +105,6 @@ export async function GET(request: Request) {
     // 「当月は昨日まで」の「昨日」を JST (UTC+9) 基準で計算
     const cutoff = yesterdayEndJstAsUtc();
     const end = monthEnd.getTime() < cutoff.getTime() ? monthEnd : cutoff;
-
-    // デバッグ: 現在の日本時間での「昨日」の日付を出力
-    const nowMs = Date.now();
-    const jstTodayDays = Math.floor((nowMs + JST_OFFSET_MS) / MS_PER_DAY);
-    const jstYesterdayDays = jstTodayDays - 1;
-    const jstYesterdayDate = new Date(jstYesterdayDays * MS_PER_DAY);
-    const jstYesterdayYmd =
-      `${jstYesterdayDate.getUTCFullYear()}-${String(jstYesterdayDate.getUTCMonth() + 1).padStart(2, "0")}-${String(jstYesterdayDate.getUTCDate()).padStart(2, "0")}`;
-    console.error("export-excel: 日本時間での「昨日」:", jstYesterdayYmd);
-    console.error("export-excel: cutoff 日付:", cutoff.toISOString());
-    console.error("export-excel: DB date 条件 gte:", start.toISOString(), "lte:", end.toISOString());
-
-    // デバッグ: date が 2026-03-16 の1件を取得して date を出力
-    const debugDayStart = new Date("2026-03-16T00:00:00.000Z");
-    const debugDayEnd = new Date("2026-03-17T00:00:00.000Z");
-    const debugRec = await prisma.dailyGeneration.findFirst({
-      where: { date: { gte: debugDayStart, lt: debugDayEnd } },
-      select: { date: true },
-    });
-    console.error("export-excel: 2026-03-16 の1件 date:", debugRec?.date != null ? debugRec.date.toISOString() : "なし");
 
     const dates = listDates(start, end);
     const dateHeaders = dates.map(ymdSlash);
