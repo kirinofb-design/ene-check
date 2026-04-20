@@ -10,7 +10,7 @@ const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
 
 /** Vercel の maxDuration（例: 300s）を超えると 504 になるため、余裕を見て処理を打ち切る */
-const DEFAULT_WALL_BUDGET_MS = 250_000;
+const DEFAULT_WALL_BUDGET_MS = 280_000;
 const STATION_MONTH_HARD_MAX_MS = 120_000;
 
 const FUSION_SOLAR_STATIONS = [
@@ -304,12 +304,11 @@ export async function runFusionSolarCollector(
         const stepTimeoutMs = Math.min(STATION_MONTH_HARD_MAX_MS, Math.max(10_000, remaining - 5000));
 
         logger.info("fusionSolarCollector: station + month", {
-          extra: { station: station.name, ne: station.ne, yearMonth },
+          extra: { station: station.name, ne: station.ne, yearMonth, stepTimeoutMs },
           userId,
         });
 
-        const allRows = await withTimeout(
-          (async () => {
+        const collectRows = async () => {
             await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
             await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
 
@@ -423,20 +422,48 @@ export async function runFusionSolarCollector(
               await page.waitForTimeout(1500);
             }
             return rows;
-          })(),
+        };
+
+        const allRows = await withTimeout(
+          collectRows(),
           stepTimeoutMs,
           `fusionSolarCollector station=${station.name} month=${yearMonth}`
-        ).catch((e) => {
-          logger.warn("fusionSolarCollector: station/month processing timed out or failed, skip", {
+        ).catch(async (firstErr) => {
+          logger.warn("fusionSolarCollector: station/month first attempt failed, retry with relogin", {
             userId,
             extra: {
               station: station.name,
               yearMonth,
-              error: e instanceof Error ? e.message : String(e),
+              error: firstErr instanceof Error ? firstErr.message : String(firstErr),
             },
           });
-          errorCount++;
-          return [] as Array<{ dateStr: string; pcsKwhText: string }>;
+
+          const retryRemaining = wallBudgetMs - (Date.now() - wallStarted);
+          if (retryRemaining < 20_000) {
+            errorCount++;
+            return [] as Array<{ dateStr: string; pcsKwhText: string }>;
+          }
+
+          try {
+            await loginFusionSolar(page, loginId, password, userId);
+            const retryTimeoutMs = Math.min(45_000, Math.max(10_000, retryRemaining - 5_000));
+            return await withTimeout(
+              collectRows(),
+              retryTimeoutMs,
+              `fusionSolarCollector retry station=${station.name} month=${yearMonth}`
+            );
+          } catch (retryErr) {
+            logger.warn("fusionSolarCollector: station/month retry failed, skip", {
+              userId,
+              extra: {
+                station: station.name,
+                yearMonth,
+                error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+              },
+            });
+            errorCount++;
+            return [] as Array<{ dateStr: string; pcsKwhText: string }>;
+          }
         });
 
         const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
@@ -494,9 +521,12 @@ export async function runFusionSolarCollector(
       }
     }
 
+    const ok = recordCount > 0 || errorCount === 0;
     return {
-      ok: true,
-      message: `FusionSolarのデータ取得が完了しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`,
+      ok,
+      message: ok
+        ? `FusionSolarのデータ取得が完了しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`
+        : `FusionSolarのデータ取得で有効データを保存できませんでした（保存: ${recordCount}件 / スキップ: ${errorCount}件）。期間を短くして再実行してください。`,
       recordCount,
       errorCount,
     };
