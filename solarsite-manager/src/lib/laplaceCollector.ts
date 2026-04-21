@@ -9,6 +9,7 @@ import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
+import { applyForcedZeroOverrides, shouldForceZero } from "@/lib/forcedZeroRules";
 
 const LAPLACE_LOGIN_URL = "https://laplaceid.energymntr.com";
 const LAPLACE_SERVICE_LIST_URL = "https://laplaceid.energymntr.com/servicelist";
@@ -29,15 +30,6 @@ const FALLBACK_LAPLACE_CODE_BY_SITE_NAME: Record<string, string> = {
   "西方（高圧）": "J-056",
   "松本242（低圧）": "J-057",
 };
-
-const LAPLACE_FORCED_ZERO_RULES: Array<{
-  siteName: string;
-  from: string; // YYYY-MM-DD
-  to: string; // YYYY-MM-DD
-}> = [
-  // 監視装置停止中のため、当該期間は 0 扱いとする
-  { siteName: "落居（笠名高圧）", from: "2026-04-01", to: "2026-04-30" },
-];
 
 /** 既定はヘッドレス（画面非表示）。調査時のみ LAPLACE_DEBUG_HEADFUL=1 でウィンドウ表示 */
 function isLaplaceDebugHeadfulEnabled(): boolean {
@@ -158,48 +150,6 @@ function parseCsvDateToUtcDate(raw: string): Date | null {
   return new Date(Date.UTC(y, mo - 1, d, 0, 0, 0, 0));
 }
 
-function shouldForceLaplaceZero(siteName: string, dateUtc: Date): boolean {
-  const rule = LAPLACE_FORCED_ZERO_RULES.find((r) => r.siteName === siteName);
-  if (!rule) return false;
-  const from = parseYmdToUtcDate(rule.from);
-  const to = parseYmdToUtcDate(rule.to);
-  if (!from || !to) return false;
-  return dateUtc.getTime() >= from.getTime() && dateUtc.getTime() <= to.getTime();
-}
-
-async function applyLaplaceForcedZeroOverrides(start: Date, end: Date): Promise<void> {
-  for (const rule of LAPLACE_FORCED_ZERO_RULES) {
-    const from = parseYmdToUtcDate(rule.from);
-    const to = parseYmdToUtcDate(rule.to);
-    if (!from || !to) continue;
-    const rangeStart = new Date(Math.max(start.getTime(), from.getTime()));
-    const rangeEnd = new Date(Math.min(end.getTime(), to.getTime()));
-    if (rangeStart.getTime() > rangeEnd.getTime()) continue;
-
-    const site = await prisma.site.findFirst({
-      where: { siteName: rule.siteName },
-      select: { id: true },
-    });
-    if (!site) continue;
-
-    const ops: Array<ReturnType<typeof prisma.dailyGeneration.upsert>> = [];
-    const cur = new Date(rangeStart);
-    while (cur.getTime() <= rangeEnd.getTime()) {
-      const day = new Date(cur);
-      ops.push(
-        prisma.dailyGeneration.upsert({
-          where: { siteId_date: { siteId: site.id, date: day } },
-          create: { siteId: site.id, date: day, generation: 0, status: "laplace" },
-          update: { generation: 0, status: "laplace", updatedAt: new Date() },
-        })
-      );
-      cur.setUTCDate(cur.getUTCDate() + 1);
-    }
-    if (ops.length > 0) {
-      await prisma.$transaction(ops);
-    }
-  }
-}
 
 function getMonthsInRange(startDate: Date, endDate: Date): string[] {
   const months: string[] = [];
@@ -811,7 +761,7 @@ async function parseAndUpsertLaplaceCsv(
       errorCount++;
       continue;
     }
-    const generation = shouldForceLaplaceZero(site.siteName, dateUtc) ? 0 : parsedGeneration;
+    const generation = shouldForceZero(site.siteName, dateUtc, "laplace") ? 0 : parsedGeneration;
 
     await prisma.dailyGeneration.upsert({
       where: { siteId_date: { siteId: site.id, date: dateUtc } },
@@ -920,7 +870,7 @@ export async function runLaplaceCollector(
     }
 
     // CSVに日が存在しない場合でも、停止中サイトの強制0ルールを必ず反映する
-    await applyLaplaceForcedZeroOverrides(start, end);
+    await applyForcedZeroOverrides(prisma, start, end, "laplace");
 
     return {
       ok: true,

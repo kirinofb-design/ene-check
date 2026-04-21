@@ -11,7 +11,8 @@
     "prisma:generate": "prisma generate",
     "prisma:seed": "prisma db seed",
     "backup": "ts-node scripts/backup.ts",
-    "validate:samples": "ts-node --compiler-options \"{\\\"module\\\":\\\"CommonJS\\\"}\" -r tsconfig-paths/register scripts/validateSamples.ts"
+    "validate:samples": "ts-node --compiler-options \"{\\\"module\\\":\\\"CommonJS\\\"}\" -r tsconfig-paths/register scripts/validateSamples.ts",
+    "check:forced-zero": "ts-node --compiler-options \"{\\\"module\\\":\\\"CommonJS\\\"}\" -r tsconfig-paths/register scripts/checkForcedZero.ts"
   },
   "dependencies": {
     "@prisma/client": "5.9.0",
