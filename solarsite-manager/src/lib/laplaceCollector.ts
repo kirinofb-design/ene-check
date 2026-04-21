@@ -167,6 +167,40 @@ function shouldForceLaplaceZero(siteName: string, dateUtc: Date): boolean {
   return dateUtc.getTime() >= from.getTime() && dateUtc.getTime() <= to.getTime();
 }
 
+async function applyLaplaceForcedZeroOverrides(start: Date, end: Date): Promise<void> {
+  for (const rule of LAPLACE_FORCED_ZERO_RULES) {
+    const from = parseYmdToUtcDate(rule.from);
+    const to = parseYmdToUtcDate(rule.to);
+    if (!from || !to) continue;
+    const rangeStart = new Date(Math.max(start.getTime(), from.getTime()));
+    const rangeEnd = new Date(Math.min(end.getTime(), to.getTime()));
+    if (rangeStart.getTime() > rangeEnd.getTime()) continue;
+
+    const site = await prisma.site.findFirst({
+      where: { siteName: rule.siteName },
+      select: { id: true },
+    });
+    if (!site) continue;
+
+    const ops: Array<ReturnType<typeof prisma.dailyGeneration.upsert>> = [];
+    const cur = new Date(rangeStart);
+    while (cur.getTime() <= rangeEnd.getTime()) {
+      const day = new Date(cur);
+      ops.push(
+        prisma.dailyGeneration.upsert({
+          where: { siteId_date: { siteId: site.id, date: day } },
+          create: { siteId: site.id, date: day, generation: 0, status: "laplace" },
+          update: { generation: 0, status: "laplace", updatedAt: new Date() },
+        })
+      );
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+    if (ops.length > 0) {
+      await prisma.$transaction(ops);
+    }
+  }
+}
+
 function getMonthsInRange(startDate: Date, endDate: Date): string[] {
   const months: string[] = [];
   const cur = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), 1));
@@ -884,6 +918,9 @@ export async function runLaplaceCollector(
         extra: { yearMonth, recordCount: monthResult.recordCount, errorCount: monthResult.errorCount },
       });
     }
+
+    // CSVに日が存在しない場合でも、停止中サイトの強制0ルールを必ず反映する
+    await applyLaplaceForcedZeroOverrides(start, end);
 
     return {
       ok: true,
