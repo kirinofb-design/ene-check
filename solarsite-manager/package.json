@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0 -p 3000",
-    "build": "prisma migrate deploy && prisma generate && next build",
+    "build": "node scripts/vercel-build.js",
     "start": "next start --hostname 0.0.0.0 -p 3000",
     "lint": "next lint",
     "prisma:migrate": "prisma migrate dev",
