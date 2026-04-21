@@ -35,7 +35,7 @@ function parseYmdToUtcDate(ymd: string): Date | null {
 async function applyPostCollectOverrides(startDate: string, endDate: string): Promise<void> {
   // 並列収集で他システムに上書きされても、停止中サイトの 0 ルールを最後に適用する。
   const from = parseYmdToUtcDate("2026-04-01");
-  const to = parseYmdToUtcDate("2026-04-14");
+  const to = parseYmdToUtcDate("2026-04-30");
   const reqStart = parseYmdToUtcDate(startDate);
   const reqEnd = parseYmdToUtcDate(endDate);
   if (!from || !to || !reqStart || !reqEnd) return;

@@ -36,7 +36,7 @@ const LAPLACE_FORCED_ZERO_RULES: Array<{
   to: string; // YYYY-MM-DD
 }> = [
   // 監視装置停止中のため、当該期間は 0 扱いとする
-  { siteName: "落居（笠名高圧）", from: "2026-04-01", to: "2026-04-14" },
+  { siteName: "落居（笠名高圧）", from: "2026-04-01", to: "2026-04-30" },
 ];
 
 /** 既定はヘッドレス（画面非表示）。調査時のみ LAPLACE_DEBUG_HEADFUL=1 でウィンドウ表示 */
