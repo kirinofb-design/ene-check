@@ -5,6 +5,9 @@ import { SessionProvider } from "@/components/providers/SessionProvider";
 export const metadata: Metadata = {
   title: "SolarSite Manager",
   description: "太陽光発電所統合管理システム (MVP)",
+  icons: {
+    icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀️</text></svg>",
+  },
 };
 
 export default function RootLayout({
