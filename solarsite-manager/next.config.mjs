@@ -29,6 +29,7 @@ const nextConfig = {
         "./node_modules/universalify/**",
         "./node_modules/jsonfile/**",
         "./node_modules/graceful-fs/**",
+        "./node_modules/rimraf/**",
       ],
       "/api/collect/sma": [
         "./node_modules/@sparticuz/chromium/**",
@@ -42,6 +43,7 @@ const nextConfig = {
         "./node_modules/universalify/**",
         "./node_modules/jsonfile/**",
         "./node_modules/graceful-fs/**",
+        "./node_modules/rimraf/**",
       ],
       "/api/cron/collect/[system]": [
         "./node_modules/@sparticuz/chromium/**",
@@ -55,6 +57,7 @@ const nextConfig = {
         "./node_modules/universalify/**",
         "./node_modules/jsonfile/**",
         "./node_modules/graceful-fs/**",
+        "./node_modules/rimraf/**",
       ],
     },
   },
