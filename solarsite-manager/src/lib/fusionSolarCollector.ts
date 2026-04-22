@@ -11,11 +11,11 @@ const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.
 
 /**
  * 実行時間の上限。
- * - production: Vercel の maxDuration（例: 300s）を考慮して 295s
+ * - production: Vercel の maxDuration（300s）に対し余裕を持って 240s
  * - development: ローカル検証では途中打ち切りを避けるため長めに許容
  */
 const DEFAULT_WALL_BUDGET_MS =
-  process.env.NODE_ENV === "production" ? 295_000 : 30 * 60 * 1000;
+  process.env.NODE_ENV === "production" ? 240_000 : 30 * 60 * 1000;
 
 const FUSION_SOLAR_STATIONS = [
   { name: "フジHD湖西発電所", ne: "33652418" },
@@ -281,7 +281,11 @@ export async function runFusionSolarCollector(
 
   const wallBudgetMs = (() => {
     const raw = Number(process.env.FUSION_SOLAR_COLLECT_BUDGET_MS);
-    if (Number.isFinite(raw) && raw > 30_000) return raw;
+    if (Number.isFinite(raw) && raw > 30_000) {
+      // production では 300s を超えないよう安全側に抑える
+      if (process.env.NODE_ENV === "production") return Math.min(raw, 240_000);
+      return raw;
+    }
     return DEFAULT_WALL_BUDGET_MS;
   })();
 
