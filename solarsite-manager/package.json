@@ -20,6 +20,8 @@
     "adm-zip": "^0.5.16",
     "bcryptjs": "2.4.3",
     "fs-extra": "^11.3.4",
+    "graceful-fs": "^4.2.11",
+    "jsonfile": "^6.2.1",
     "next": "14.2.35",
     "next-auth": "^5.0.0-beta.30",
     "node-cron": "^4.2.1",
@@ -33,6 +35,7 @@
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "recharts": "2.10.3",
+    "universalify": "^2.0.1",
     "xlsx": "0.18.5",
     "zod": "3.23.8"
   },
