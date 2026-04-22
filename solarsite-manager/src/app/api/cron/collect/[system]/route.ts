@@ -1,13 +1,8 @@
 import { NextResponse } from "next/server";
 import { acquireCollectorLock, releaseCollectorLock, type CollectorKind } from "@/lib/collectorLock";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
-import { runEcoMeganeCollector } from "@/lib/ecoMeganeCollector";
-import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
-import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import { runSmaCollector } from "@/lib/smaCollector";
-import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
 import { applyForcedZeroOverrides, parseYmdToUtcDate } from "@/lib/forcedZeroRules";
 import { getStartAndEndDateJstMonthToYesterday, isAuthorizedByCronSecret, resolveCronUserId } from "@/lib/cronCollect";
 
@@ -23,29 +18,26 @@ type CronSystem =
 
 type CollectResult = { ok: boolean; message: string; recordCount: number; errorCount: number };
 
-const SYSTEMS: Record<
-  CronSystem,
-  { kind: CollectorKind; run: (userId: string, startDate: string, endDate: string) => Promise<CollectResult> }
-> = {
-  "eco-megane": {
-    kind: "eco-megane",
-    run: runEcoMeganeCollector,
-  },
-  "fusion-solar": {
-    kind: "fusion-solar",
-    run: runFusionSolarCollector,
-  },
-  sma: {
-    kind: "sma",
-    run: runSmaCollector,
-  },
-  laplace: {
-    kind: "laplace",
-    run: runLaplaceCollector,
-  },
-  "solar-monitor-sf": {
-    kind: "solar-monitor-sf",
-    run: async (userId, startDate, endDate) => {
+async function runBySystem(system: CronSystem, userId: string, startDate: string, endDate: string): Promise<CollectResult> {
+  switch (system) {
+    case "eco-megane": {
+      const { runEcoMeganeCollector } = await import("@/lib/ecoMeganeCollector");
+      return runEcoMeganeCollector(userId, startDate, endDate);
+    }
+    case "fusion-solar": {
+      const { runFusionSolarCollector } = await import("@/lib/fusionSolarCollector");
+      return runFusionSolarCollector(userId, startDate, endDate);
+    }
+    case "sma": {
+      const { runSmaCollector } = await import("@/lib/smaCollector");
+      return runSmaCollector(userId, startDate, endDate);
+    }
+    case "laplace": {
+      const { runLaplaceCollector } = await import("@/lib/laplaceCollector");
+      return runLaplaceCollector(userId, startDate, endDate);
+    }
+    case "solar-monitor-sf": {
+      const { runSolarMonitorCollector } = await import("@/lib/solarMonitorCollector");
       try {
         const r = await runSolarMonitorCollector(userId, startDate, endDate, "solar-monitor-sf");
         return {
@@ -62,11 +54,9 @@ const SYSTEMS: Record<
           errorCount: 0,
         };
       }
-    },
-  },
-  "solar-monitor-se": {
-    kind: "solar-monitor-se",
-    run: async (userId, startDate, endDate) => {
+    }
+    case "solar-monitor-se": {
+      const { runSolarMonitorCollector } = await import("@/lib/solarMonitorCollector");
       try {
         const r = await runSolarMonitorCollector(userId, startDate, endDate, "solar-monitor-se");
         return {
@@ -83,12 +73,28 @@ const SYSTEMS: Record<
           errorCount: 0,
         };
       }
-    },
-  },
+    }
+    default:
+      return {
+        ok: false,
+        message: "UNKNOWN_SYSTEM",
+        recordCount: 0,
+        errorCount: 0,
+      };
+  }
+}
+
+const SYSTEM_KIND_MAP: Record<CronSystem, CollectorKind> = {
+  "eco-megane": "eco-megane",
+  "fusion-solar": "fusion-solar",
+  sma: "sma",
+  laplace: "laplace",
+  "solar-monitor-sf": "solar-monitor-sf",
+  "solar-monitor-se": "solar-monitor-se",
 };
 
 function asCronSystem(v: string): CronSystem | null {
-  return v in SYSTEMS ? (v as CronSystem) : null;
+  return v in SYSTEM_KIND_MAP ? (v as CronSystem) : null;
 }
 
 async function applyPostCollectOverridesIfNeeded(system: CronSystem, startDate: string, endDate: string): Promise<void> {
@@ -141,8 +147,8 @@ export async function GET(
     });
   }
 
-  const runner = SYSTEMS[system];
-  const lock = acquireCollectorLock(userId, runner.kind);
+  const kind = SYSTEM_KIND_MAP[system];
+  const lock = acquireCollectorLock(userId, kind);
   if (!lock.ok) {
     return NextResponse.json(
       {
@@ -164,12 +170,19 @@ export async function GET(
       userId,
       extra: { system, startDate, endDate },
     });
-    result = await runner.run(userId, startDate, endDate);
+    result = await runBySystem(system, userId, startDate, endDate);
     if (result.ok) {
       await applyPostCollectOverridesIfNeeded(system, startDate, endDate);
     }
+  } catch (e) {
+    result = {
+      ok: false,
+      message: e instanceof Error ? e.message : "CRON_SYSTEM_RUN_FAILED",
+      recordCount: 0,
+      errorCount: 0,
+    };
   } finally {
-    releaseCollectorLock(userId, runner.kind);
+    releaseCollectorLock(userId, kind);
   }
 
   logger.info("cron collect system finished", {
