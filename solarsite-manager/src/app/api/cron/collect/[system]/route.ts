@@ -97,6 +97,16 @@ function asCronSystem(v: string): CronSystem | null {
   return v in SYSTEM_KIND_MAP ? (v as CronSystem) : null;
 }
 
+function yesterdayJstYmd(): string {
+  const jstNowMs = Date.now() + 9 * 60 * 60 * 1000;
+  const jstNow = new Date(jstNowMs);
+  const y = jstNow.getUTCFullYear();
+  const m = jstNow.getUTCMonth();
+  const d = jstNow.getUTCDate();
+  const yester = new Date(Date.UTC(y, m, d - 1, 0, 0, 0, 0));
+  return `${yester.getUTCFullYear()}-${String(yester.getUTCMonth() + 1).padStart(2, "0")}-${String(yester.getUTCDate()).padStart(2, "0")}`;
+}
+
 async function applyPostCollectOverridesIfNeeded(system: CronSystem, startDate: string, endDate: string): Promise<void> {
   if (system !== "laplace") return;
   const reqStart = parseYmdToUtcDate(startDate);
@@ -135,7 +145,11 @@ export async function GET(
     );
   }
 
-  const { startDate, endDate } = getStartAndEndDateJstMonthToYesterday();
+  const monthToYesterday = getStartAndEndDateJstMonthToYesterday();
+  const { startDate, endDate } =
+    system === "fusion-solar"
+      ? { startDate: yesterdayJstYmd(), endDate: yesterdayJstYmd() }
+      : monthToYesterday;
   if (startDate > endDate) {
     return NextResponse.json({
       ok: true,
