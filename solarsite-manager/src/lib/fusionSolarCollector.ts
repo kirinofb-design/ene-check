@@ -302,7 +302,22 @@ export async function runFusionSolarCollector(
   try {
     throwIfAllCollectCancelled(userId);
     let storageStateJson: string | null = null;
-    const loginResult = await autoLogin(userId, "fusion-solar", { headless: true });
+    const autoLoginTimeoutMs = process.env.NODE_ENV === "production" ? 20_000 : 45_000;
+    const timedAutoLogin = await Promise.race([
+      autoLogin(userId, "fusion-solar", { headless: true }),
+      new Promise<Awaited<ReturnType<typeof autoLogin>>>((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              systemId: "fusion-solar",
+              ok: false,
+              message: `autoLogin timeout (${autoLoginTimeoutMs}ms)`,
+            }),
+          autoLoginTimeoutMs
+        )
+      ),
+    ]);
+    const loginResult = timedAutoLogin;
     if (loginResult.ok && loginResult.storageStateJson) {
       storageStateJson = loginResult.storageStateJson;
       logger.info("fusionSolarCollector: using runtime storageState from autoLogin", {
