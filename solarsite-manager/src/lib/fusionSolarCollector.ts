@@ -292,6 +292,8 @@ export async function runFusionSolarCollector(
 
   let recordCount = 0;
   let errorCount = 0;
+  // Vercel の実行時間上限に収めるため、壁時計は関数実行開始時点から計測する
+  const wallStarted = Date.now();
 
   try {
     throwIfAllCollectCancelled(userId);
@@ -332,9 +334,6 @@ export async function runFusionSolarCollector(
     if (!storageStateJson) {
       await loginFusionSolar(page, loginId, password, userId);
     }
-
-    // ブラウザ起動・ログインは時間がかかるため、壁時計は「発電所×月」ループ開始時点から計測する
-    const wallStarted = Date.now();
 
     const months = getMonthsInRange(start, end);
     const stations = await orderStationsByCoverage(FUSION_SOLAR_STATIONS, start, end, userId);
