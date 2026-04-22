@@ -11,11 +11,11 @@ const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.
 
 /**
  * 実行時間の上限。
- * - production: Vercel の maxDuration（300s）に対し余裕を持って 240s
+ * - production: Vercel の maxDuration（300s）に対し余裕を持って 270s
  * - development: ローカル検証では途中打ち切りを避けるため長めに許容
  */
 const DEFAULT_WALL_BUDGET_MS =
-  process.env.NODE_ENV === "production" ? 240_000 : 30 * 60 * 1000;
+  process.env.NODE_ENV === "production" ? 270_000 : 30 * 60 * 1000;
 
 const FUSION_SOLAR_STATIONS = [
   { name: "フジHD湖西発電所", ne: "33652418" },
@@ -283,7 +283,7 @@ export async function runFusionSolarCollector(
     const raw = Number(process.env.FUSION_SOLAR_COLLECT_BUDGET_MS);
     if (Number.isFinite(raw) && raw > 30_000) {
       // production では 300s を超えないよう安全側に抑える
-      if (process.env.NODE_ENV === "production") return Math.min(raw, 240_000);
+      if (process.env.NODE_ENV === "production") return Math.min(raw, 270_000);
       return raw;
     }
     return DEFAULT_WALL_BUDGET_MS;
@@ -351,7 +351,8 @@ export async function runFusionSolarCollector(
         throwIfAllCollectCancelled(userId);
         const elapsed = Date.now() - wallStarted;
         const remaining = wallBudgetMs - elapsed;
-        if (remaining < 15_000) {
+        const minRemainingToContinue = recordCount > 0 ? 15_000 : 5_000;
+        if (remaining < minRemainingToContinue) {
           return {
             ok: true,
             message: `FusionSolarの取得を実行時間の上限のためここまでにしました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。発電所×月の処理が重いため、開始日・終了日の範囲を短く分けて再実行してください。`,
