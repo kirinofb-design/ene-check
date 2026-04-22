@@ -465,10 +465,16 @@ async function dismissSunnyPortalConsentIfPresent(page: any): Promise<boolean> {
 
 function smaPageContexts(page: any): any[] {
   const out: any[] = [page];
-  if (typeof page.frames === "function") {
-    const main = typeof page.mainFrame === "function" ? page.mainFrame() : null;
-    for (const f of page.frames() as any[]) {
-      if (f && f !== main) out.push(f);
+  if (typeof page.frames !== "function") return out;
+  const main = typeof page.mainFrame === "function" ? page.mainFrame() : null;
+  for (const f of page.frames() as any[]) {
+    if (!f || f === main) continue;
+    try {
+      // Puppeteer Frame は isDetached() を持つ。detach済みフレームは評価時に例外化しやすい。
+      if (typeof f.isDetached === "function" && f.isDetached()) continue;
+      out.push(f);
+    } catch {
+      // 取得途中でフレーム状態が変わることがあるため、使えないものは無視
     }
   }
   return out;
@@ -581,8 +587,7 @@ async function trySwitchToMonthView(page: any): Promise<boolean> {
       })
       .catch(() => false)) as boolean;
 
-  const contexts = smaPageContexts(page);
-  for (const ctx of contexts) {
+  for (const ctx of smaPageContexts(page)) {
     const clicked = await tryClickMonthInContext(ctx);
     if (clicked) {
       await smaDelay(2500, 700);
@@ -592,7 +597,7 @@ async function trySwitchToMonthView(page: any): Promise<boolean> {
 
   await dismissSunnyPortalConsentIfPresent(page);
   await smaDelay(700, 200);
-  for (const ctx of contexts) {
+  for (const ctx of smaPageContexts(page)) {
     const clicked = await tryClickMonthInContext(ctx);
     if (clicked) {
       await smaDelay(2500, 700);
@@ -1158,6 +1163,17 @@ async function clickRedirectLinkAndResolvePage(
   return { page, urlAfterClick: page.url() };
 }
 
+function normalizeForLooseMatch(text: string): string {
+  return text.replace(/\s+/g, "").replace(/[（）()]/g, "").toLowerCase();
+}
+
+function titleLooksForPlant(title: string, plantDisplayName: string): boolean {
+  if (!title || !plantDisplayName) return false;
+  const t = normalizeForLooseMatch(title);
+  const n = normalizeForLooseMatch(plantDisplayName);
+  return t.includes(n);
+}
+
 // NOTE: 旧実装（CSVダウンロード/画面遷移）で使っていたヘルパーは廃止
 
 async function gotoNetworkIdle(page: any, url: string, timeoutMs?: number) {
@@ -1504,14 +1520,16 @@ export async function runSmaCollectorCookie(
         continue;
       }
 
-      // 発電所選択は goto 直打ちではなく /Plants の実リンク click で遷移させる。
+      // 発電所選択は /Plants の実リンク click を優先。見つからない環境では RedirectToPlant 直URLで補完する。
       await page.goto("https://www.sunnyportal.com/Plants", { waitUntil: "domcontentloaded" });
       await smaDelay(1000, 320);
+      let redirectedByClick = false;
       try {
         const clickResult = await clickRedirectLinkAndResolvePage(page, plantOid);
         if (clickResult.page !== page) {
           page = clickResult.page;
         }
+        redirectedByClick = true;
         logger.info("smaCollector: redirect target navigated", {
           userId,
           extra: { plantName, plantOid, urlAfterClick: clickResult.urlAfterClick },
@@ -1522,6 +1540,16 @@ export async function runSmaCollectorCookie(
         logger.warn("smaCollector: RedirectToPlant goto failed", {
           userId,
           extra: { plantName, plantOid, error: String(e) },
+        });
+      }
+
+      if (!redirectedByClick) {
+        const directRedirectUrl = `https://www.sunnyportal.com/RedirectToPlant/${plantOid}`;
+        await page.goto(directRedirectUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        await smaDelay(1800, 550);
+        logger.info("smaCollector: direct RedirectToPlant fallback tried", {
+          userId,
+          extra: { plantName, plantOid, directRedirectUrl, urlAfterDirect: page.url() },
         });
       }
 
@@ -1560,9 +1588,19 @@ export async function runSmaCollectorCookie(
       const isEnergyTitle = title.includes("出力と発電量") || title.includes("Energy");
       // タイトル取得が空文字になる瞬間があるため、URL判定を優先してページ到達扱いにする
       const isEnergyPage = isEnergyUrl || isEnergyTitle;
+      const isExpectedPlant = titleLooksForPlant(title, plantName);
       logger.info("smaCollector: EnergyAndPower result", {
         userId,
-        extra: { plantName, plantOid, energyUrl: url, energyTitle: title, isEnergyUrl, isEnergyTitle, isEnergyPage },
+        extra: {
+          plantName,
+          plantOid,
+          energyUrl: url,
+          energyTitle: title,
+          isEnergyUrl,
+          isEnergyTitle,
+          isEnergyPage,
+          isExpectedPlant,
+        },
       });
 
       if (!isEnergyPage) {
@@ -1572,6 +1610,29 @@ export async function runSmaCollectorCookie(
         });
         stationErrors++;
         continue;
+      }
+
+      if (!isExpectedPlant) {
+        // 直前の発電所コンテキストのまま残るケースがあるため、再選択を1回だけ実施する
+        const directRedirectUrl = `https://www.sunnyportal.com/RedirectToPlant/${plantOid}`;
+        await page.goto(directRedirectUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        await smaDelay(1800, 550);
+        await page.goto("https://www.sunnyportal.com/FixedPages/EnergyAndPower.aspx", { waitUntil: "domcontentloaded" });
+        await smaDelay(2500, 900);
+        const retryTitle = await page.title().catch(() => "");
+        const retryOk = titleLooksForPlant(retryTitle, plantName);
+        logger.info("smaCollector: plant identity retry", {
+          userId,
+          extra: { plantName, plantOid, retryTitle, retryOk, retryUrl: page.url() },
+        });
+        if (!retryOk) {
+          logger.warn("smaCollector: plant identity mismatch, skip to avoid wrong overwrite", {
+            userId,
+            extra: { plantName, plantOid, title: retryTitle, url: page.url() },
+          });
+          stationErrors++;
+          continue;
+        }
       }
 
       const site = await prisma.site.findFirst({

@@ -9,8 +9,13 @@ import type { Page } from "playwright-core";
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
 
-/** Vercel の maxDuration（例: 300s）を超えると 504 になるため、余裕を見て処理を打ち切る */
-const DEFAULT_WALL_BUDGET_MS = 295_000;
+/**
+ * 実行時間の上限。
+ * - production: Vercel の maxDuration（例: 300s）を考慮して 295s
+ * - development: ローカル検証では途中打ち切りを避けるため長めに許容
+ */
+const DEFAULT_WALL_BUDGET_MS =
+  process.env.NODE_ENV === "production" ? 295_000 : 30 * 60 * 1000;
 
 const FUSION_SOLAR_STATIONS = [
   { name: "フジHD湖西発電所", ne: "33652418" },
@@ -34,6 +39,22 @@ function parseYmdToUtcDate(ymd: string): Date | null {
   if (!y || !m || !d) return null;
   const dt = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
   return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+/** FusionSolar の日付セル（全角数字・1桁月日など）を YYYY-MM-DD に寄せる */
+function normalizeFusionTableDateCell(raw: string): string | null {
+  const ascii = raw
+    .trim()
+    .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/\u3000/g, " ");
+  const slash = ascii.replace(/-/g, "/");
+  const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(slash);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!y || !mo || !d) return null;
+  return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
 /** startDate〜endDate に含まれる年月（YYYY-MM）の配列を返す */
@@ -260,7 +281,7 @@ export async function runFusionSolarCollector(
 
   const wallBudgetMs = (() => {
     const raw = Number(process.env.FUSION_SOLAR_COLLECT_BUDGET_MS);
-    if (Number.isFinite(raw) && raw > 30_000) return Math.min(raw, 295_000);
+    if (Number.isFinite(raw) && raw > 30_000) return raw;
     return DEFAULT_WALL_BUDGET_MS;
   })();
 
@@ -449,12 +470,18 @@ export async function runFusionSolarCollector(
                 })
               );
               for (const r of pageRows) {
-                const dt = parseYmdToUtcDate(r.dateStr.replace(/\//g, "-").trim());
+                const ymd =
+                  normalizeFusionTableDateCell(r.dateStr) ??
+                  (() => {
+                    const t = r.dateStr.replace(/\//g, "-").trim();
+                    return isYmd(t) ? t : null;
+                  })();
+                const dt = ymd ? parseYmdToUtcDate(ymd) : null;
                 if (!dt) continue;
                 if (dt.getTime() > end.getTime()) continue;
                 if (dt.getTime() < start.getTime()) {
-                  // テーブルは新しい日付順のため、開始日より古くなったら以降は不要
-                  return rows;
+                  // 画面が日付降順とは限らず、同一ページで抜け・逆順があると return すると未取得日が出る
+                  continue;
                 }
                 rows.push(r);
               }
@@ -533,7 +560,13 @@ export async function runFusionSolarCollector(
             errorCount++;
             continue;
           }
-          const dateUtc = parseYmdToUtcDate(dateStr.replace(/\//g, "-").trim());
+          const ymdNorm =
+            normalizeFusionTableDateCell(dateStr) ??
+            (() => {
+              const t = dateStr.replace(/\//g, "-").trim();
+              return isYmd(t) ? t : null;
+            })();
+          const dateUtc = ymdNorm ? parseYmdToUtcDate(ymdNorm) : null;
           if (!dateUtc) {
             errorCount++;
             continue;
