@@ -243,7 +243,10 @@ async function orderStationsByCoverage(
 export async function runFusionSolarCollector(
   userId: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  options?: {
+    stationNeAllowList?: string[];
+  }
 ): Promise<{ ok: boolean; message: string; recordCount: number; errorCount: number }> {
   const start = parseYmdToUtcDate(startDate);
   const end = parseYmdToUtcDate(endDate);
@@ -355,7 +358,12 @@ export async function runFusionSolarCollector(
     }
 
     const months = getMonthsInRange(start, end);
-    const stations = await orderStationsByCoverage(FUSION_SOLAR_STATIONS, start, end, userId);
+    const allStations = await orderStationsByCoverage(FUSION_SOLAR_STATIONS, start, end, userId);
+    const allowSet =
+      options?.stationNeAllowList && options.stationNeAllowList.length > 0
+        ? new Set(options.stationNeAllowList)
+        : null;
+    const stations = allowSet ? allStations.filter((s) => allowSet.has(s.ne)) : allStations;
 
     // 発電所ごと × 月ごとにループ
     for (const station of stations) {
