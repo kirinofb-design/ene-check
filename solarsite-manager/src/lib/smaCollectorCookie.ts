@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
+import { isVercelRuntime, prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1314,11 +1315,45 @@ export async function runSmaCollectorCookie(
     });
   }
 
-  const browser = await puppeteer.launch({
+  const launchOpts: {
+    headless: boolean;
+    args: string[];
+    slowMo: number;
+    defaultViewport: { width: number; height: number } | null | undefined;
+    executablePath?: string;
+  } = {
     headless: isDebugHeadfulEnabled() ? false : true,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-setuid-sandbox"],
     slowMo: isDebugHeadfulEnabled() ? 200 : 0,
     defaultViewport: isDebugHeadfulEnabled() ? null : undefined,
+  };
+
+  if (isVercelRuntime()) {
+    await prewarmVercelChromiumExecutable().catch(() => {});
+    try {
+      const chromiumMod = await import("@sparticuz/chromium");
+      const chromium = chromiumMod.default ?? chromiumMod;
+      const executablePath = await chromium.executablePath();
+      launchOpts.executablePath = executablePath;
+      launchOpts.args = Array.from(new Set([...(chromium.args ?? []), ...launchOpts.args]));
+      logger.info("smaCollector: using sparticuz chromium on vercel", {
+        userId,
+        extra: { executablePath, argsCount: launchOpts.args.length },
+      });
+    } catch (e) {
+      logger.warn("smaCollector: failed to resolve sparticuz chromium, fallback to bundled browser", {
+        userId,
+        extra: { error: e instanceof Error ? e.message : String(e) },
+      });
+    }
+  }
+
+  const browser = await puppeteer.launch({
+    headless: launchOpts.headless,
+    args: launchOpts.args,
+    slowMo: launchOpts.slowMo,
+    defaultViewport: launchOpts.defaultViewport,
+    executablePath: launchOpts.executablePath,
   });
 
   logger.info("smaCollector: browser launch mode", {
