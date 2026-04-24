@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
+import { ensureSiteMasterSeededIfEmpty } from "@/lib/siteMaster";
 import { utils, write } from "xlsx";
 
 function systemLabel(monitoringSystem: string): string {
@@ -103,6 +104,7 @@ export async function GET(request: Request) {
   try {
     await requireAuth(request);
     await ensureDbReachable(5);
+    await ensureSiteMasterSeededIfEmpty();
 
     const { searchParams } = new URL(request.url);
     const monthParam = parseMonthParam(searchParams.get("month"));

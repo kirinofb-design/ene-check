@@ -7,6 +7,7 @@ import { logger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/encryption";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
+import { ensureSiteMasterSeededIfEmpty } from "@/lib/siteMaster";
 
 const ECO_MEGANE_LOGIN_URL = "https://eco-megane.jp/login";
 const ECO_MEGANE_PRODUCT_LIST_URL =
@@ -287,6 +288,7 @@ export async function runEcoMeganeCollector(
  * カラム: 商品ID, 表示名, センサー番号, センサーID, 都道府県, データ計測日, 消費電力量(kWh), 発電電力量(kWh), ...
  */
 async function parseAndUpsertCsv(csvText: string): Promise<{ recordCount: number; errorCount: number }> {
+  await ensureSiteMasterSeededIfEmpty();
   const lines = csvText.split(/\r?\n/).filter((line) => line.trim());
   if (lines.length < 2) return { recordCount: 0, errorCount: 0 };
 
