@@ -153,7 +153,7 @@ export default function ExcelExportSection() {
           />
         </div>
 
-        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto', minHeight: '100px' }}>
+        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto', minHeight: '117px' }}>
           <button
             style={excelBtnStyle}
             onClick={() => void handleDownload()}
