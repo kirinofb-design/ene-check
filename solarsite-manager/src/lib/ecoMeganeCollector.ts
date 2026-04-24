@@ -42,6 +42,31 @@ const DISPLAY_NAME_MAP: Record<string, string> = {
   "ＦＢ牧之原勝俣発電所": "勝俣（低圧）",
 };
 
+function normalizeForLooseMatch(s: string): string {
+  return s
+    .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/\u3000/g, " ")
+    .replace(/[()（）\[\]【】]/g, "")
+    .replace(/[・･]/g, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+function buildEcoMeganeCandidateNames(displayName: string): string[] {
+  const base = displayName.trim();
+  const mapped = (DISPLAY_NAME_MAP[base] ?? base).trim();
+  const names = new Set<string>([base, mapped]);
+  // 「発電所」「ＦＢ」「フジ物産」などの表記差異を吸収するための簡易候補
+  const stripped = mapped
+    .replace(/^fb/i, "")
+    .replace(/^ＦＢ/, "")
+    .replace(/^フジ物産/, "")
+    .replace(/発電所/g, "")
+    .trim();
+  if (stripped) names.add(stripped);
+  return [...names];
+}
+
 /**
  * エコめがねでログインし、商品一覧で「エコグラフ電力量」の日別CSVをダウンロードして
  * 発電電力量を DailyGeneration に upsert する。
@@ -277,6 +302,16 @@ async function parseAndUpsertCsv(csvText: string): Promise<{ recordCount: number
 
   let recordCount = 0;
   let errorCount = 0;
+  const allSites = await prisma.site.findMany({
+    select: { id: true, siteName: true, monitoringSystem: true },
+  });
+  const normalizedSiteIndex = new Map<string, { id: string; siteName: string; monitoringSystem: string }[]>();
+  for (const s of allSites) {
+    const key = normalizeForLooseMatch(s.siteName);
+    const bucket = normalizedSiteIndex.get(key) ?? [];
+    bucket.push(s);
+    normalizedSiteIndex.set(key, bucket);
+  }
 
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCsvLine(lines[i]);
@@ -288,17 +323,35 @@ async function parseAndUpsertCsv(csvText: string): Promise<{ recordCount: number
       continue;
     }
 
-    // マッピングがあれば DB 用のサイト名に変換してから検索
-    const mappedName = DISPLAY_NAME_MAP[displayName] ?? displayName;
-    const site = await prisma.site.findFirst({
-      where: { siteName: mappedName },
-      select: { id: true },
-    });
+    // 名称揺れに強い照合を行う（完全一致→正規化一致→包含一致）
+    const candidates = buildEcoMeganeCandidateNames(displayName);
+    let site: { id: string; siteName: string; monitoringSystem: string } | null = null;
+    for (const c of candidates) {
+      const exact = allSites.find((s) => s.siteName === c);
+      if (exact) {
+        site = exact;
+        break;
+      }
+      const norm = normalizeForLooseMatch(c);
+      const normHit = normalizedSiteIndex.get(norm)?.[0];
+      if (normHit) {
+        site = normHit;
+        break;
+      }
+    }
     if (!site) {
-      // デバッグ: Site が見つからなかった表示名とマッピング後名を出力
+      const normalizedCandidates = candidates.map((c) => normalizeForLooseMatch(c));
+      const includeHit = allSites.find((s) => {
+        const n = normalizeForLooseMatch(s.siteName);
+        return normalizedCandidates.some((c) => n.includes(c) || c.includes(n));
+      });
+      site = includeHit ?? null;
+    }
+    if (!site) {
+      // デバッグ: Site が見つからなかった表示名候補を出力
       console.error(
         "ecoMeganeCollector: site not found",
-        { displayName, mappedName }
+        { displayName, candidates }
       );
       errorCount++;
       continue;
