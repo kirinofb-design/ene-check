@@ -8,6 +8,7 @@ import { decryptSecret } from "@/lib/encryption";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import { ensureSiteMasterSeededIfEmpty } from "@/lib/siteMaster";
+import type { Page, Response } from "playwright-core";
 
 const ECO_MEGANE_LOGIN_URL = "https://eco-megane.jp/login";
 const ECO_MEGANE_PRODUCT_LIST_URL =
@@ -66,6 +67,58 @@ function buildEcoMeganeCandidateNames(displayName: string): string[] {
     .trim();
   if (stripped) names.add(stripped);
   return [...names];
+}
+
+function looksLikeEcoMeganeCsvResponse(resp: Response): boolean {
+  const url = resp.url().toLowerCase();
+  const ct = (resp.headers()["content-type"] ?? "").toLowerCase();
+  const cd = (resp.headers()["content-disposition"] ?? "").toLowerCase();
+  if (ct.includes("csv")) return true;
+  if (cd.includes("attachment")) return true;
+  if (url.includes("download")) return true;
+  if (url.includes("csv")) return true;
+  if (url.includes("measuregenerateamount")) return true;
+  return false;
+}
+
+async function clickEcoMeganeCsvButton(page: Page): Promise<void> {
+  const clicked = await page.evaluate(() => {
+    const el = document.querySelector("a#measureGenerateAmountBtn") as HTMLAnchorElement | null;
+    if (!el) return false;
+    // 画面側の onclick ハンドラに任せる（Playwright の遷移待機を回避）
+    el.click();
+    return true;
+  });
+  if (!clicked) {
+    throw new Error("eco-megane: ダウンロードボタンが見つかりません。");
+  }
+}
+
+async function fetchEcoMeganeCsvText(page: Page): Promise<string> {
+  const downloadPromise = page
+    .waitForEvent("download", { timeout: 30_000 })
+    .then(async (download) => {
+      const downloadPath = path.join(os.tmpdir(), `eco-megane-${Date.now()}.csv`);
+      await download.saveAs(downloadPath);
+      const csvBuffer = await fs.readFile(downloadPath);
+      await fs.unlink(downloadPath).catch(() => {});
+      return iconv.decode(csvBuffer, "shift_jis");
+    });
+
+  const responsePromise = page
+    .waitForResponse((r) => looksLikeEcoMeganeCsvResponse(r), { timeout: 30_000 })
+    .then(async (resp) => {
+      const buf = await resp.body();
+      return iconv.decode(buf, "shift_jis");
+    });
+
+  await clickEcoMeganeCsvButton(page);
+
+  // Promise.any の取りこぼしで unhandledRejection が出ないよう、両方を完了まで待つ
+  const [downloadResult, responseResult] = await Promise.allSettled([downloadPromise, responsePromise]);
+  if (downloadResult.status === "fulfilled" && downloadResult.value.trim()) return downloadResult.value;
+  if (responseResult.status === "fulfilled" && responseResult.value.trim()) return responseResult.value;
+  throw new Error("eco-megane CSVの取得に失敗しました（download/response いずれも未検出）。");
 }
 
 /**
@@ -225,23 +278,8 @@ export async function runEcoMeganeCollector(
     });
     await new Promise((r) => setTimeout(r, 500));
 
-    // ダウンロードボタンクリックとダウンロード完了を待つ
-    const downloadPromise = page.waitForEvent("download", { timeout: 30_000 });
-    // 6. ダウンロードボタンを page.evaluate で直接クリック
-    await page.evaluate(() => {
-      const el = document.querySelector("a#measureGenerateAmountBtn") as
-        | HTMLAnchorElement
-        | null;
-      if (el) el.click();
-    });
-    const download = await downloadPromise;
-    const downloadPath = path.join(os.tmpdir(), `eco-megane-${Date.now()}.csv`);
-    await download.saveAs(downloadPath);
-
-    // Shift-JIS でエンコードされた CSV を読み込み
-    const csvBuffer = await fs.readFile(downloadPath);
-    const csvText = iconv.decode(csvBuffer, "shift_jis");
-    await fs.unlink(downloadPath).catch(() => {});
+    // CSV取得: download イベントとレスポンス直接取得の両方に対応する
+    const csvText = await fetchEcoMeganeCsvText(page);
 
     // デバッグ: CSV の最初の3行をログ出力
     const first3Lines = csvText.split(/\r?\n/).slice(0, 3);
