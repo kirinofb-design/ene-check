@@ -6,51 +6,51 @@
     },
     {
       "path": "/api/cron/collect/fusion-solar-station/34130688",
-      "schedule": "5 20 * * *"
+      "schedule": "2 20 * * *"
     },
     {
       "path": "/api/cron/collect/fusion-solar-station/33860228",
-      "schedule": "10 20 * * *"
+      "schedule": "4 20 * * *"
     },
     {
       "path": "/api/cron/collect/fusion-solar-station/33733199",
-      "schedule": "15 20 * * *"
+      "schedule": "6 20 * * *"
     },
     {
       "path": "/api/cron/collect/fusion-solar-station/34631202",
-      "schedule": "20 20 * * *"
+      "schedule": "8 20 * * *"
     },
     {
       "path": "/api/cron/collect/fusion-solar-station/34364567",
-      "schedule": "25 20 * * *"
+      "schedule": "10 20 * * *"
     },
     {
       "path": "/api/cron/collect/fusion-solar-station/33558911",
-      "schedule": "30 20 * * *"
+      "schedule": "12 20 * * *"
     },
     {
       "path": "/api/cron/collect/fusion-solar-station/33559317",
-      "schedule": "35 20 * * *"
+      "schedule": "14 20 * * *"
     },
     {
       "path": "/api/cron/collect/eco-megane",
-      "schedule": "40 20 * * *"
+      "schedule": "16 20 * * *"
     },
     {
       "path": "/api/cron/collect/sma",
-      "schedule": "45 20 * * *"
+      "schedule": "18 20 * * *"
     },
     {
       "path": "/api/cron/collect/laplace",
-      "schedule": "50 20 * * *"
+      "schedule": "20 20 * * *"
     },
     {
       "path": "/api/cron/collect/solar-monitor-sf",
-      "schedule": "55 20 * * *"
+      "schedule": "22 20 * * *"
     },
     {
       "path": "/api/cron/collect/solar-monitor-se",
-      "schedule": "0 21 * * *"
+      "schedule": "24 20 * * *"
     }
   ]
 }

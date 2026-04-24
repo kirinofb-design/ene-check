@@ -12,6 +12,18 @@ type LockState = {
   smaRunning: boolean;
   runningKind: CollectorKind | null;
   allCancelRequested: boolean;
+  allProgress: {
+    totalSteps: number;
+    completedSteps: number;
+    currentStepKey: string | null;
+    steps: Array<{
+      key: string;
+      ok: boolean;
+      message: string;
+      recordCount: number;
+      errorCount: number;
+    }>;
+  } | null;
 };
 
 const globalKey = "__collector_lock_state__";
@@ -31,6 +43,7 @@ function getOrCreateState(userId: string): LockState {
     smaRunning: false,
     runningKind: null,
     allCancelRequested: false,
+    allProgress: null,
   };
   stateMap.set(userId, next);
   return next;
@@ -75,6 +88,7 @@ export function acquireCollectorLock(
   state.allRunning = kind === "all";
   state.smaRunning = kind === "sma";
   state.allCancelRequested = false;
+  state.allProgress = null;
   return { ok: true };
 }
 
@@ -89,6 +103,7 @@ export function releaseCollectorLock(userId: string, kind: CollectorKind): void 
   state.allRunning = false;
   state.smaRunning = false;
   state.allCancelRequested = false;
+  state.allProgress = null;
   if (!state.runningKind) {
     stateMap.delete(userId);
   }
@@ -96,7 +111,15 @@ export function releaseCollectorLock(userId: string, kind: CollectorKind): void 
 
 export function getCollectorLockState(userId: string): LockState {
   const state = stateMap.get(userId);
-  if (!state) return { allRunning: false, smaRunning: false, runningKind: null, allCancelRequested: false };
+  if (!state) {
+    return {
+      allRunning: false,
+      smaRunning: false,
+      runningKind: null,
+      allCancelRequested: false,
+      allProgress: null,
+    };
+  }
   return { ...state };
 }
 
@@ -119,4 +142,49 @@ export function isCollectorCancelRequested(userId: string, kind: CollectorKind):
   if (!state) return false;
   if (kind === "all") return state.allCancelRequested;
   return false;
+}
+
+export function initializeAllCollectProgress(userId: string, totalSteps: number): void {
+  const state = stateMap.get(userId);
+  if (!state || state.runningKind !== "all") return;
+  state.allProgress = {
+    totalSteps,
+    completedSteps: 0,
+    currentStepKey: null,
+    steps: [],
+  };
+}
+
+export function markAllCollectStepStarted(userId: string, stepKey: string): void {
+  const state = stateMap.get(userId);
+  if (!state || state.runningKind !== "all") return;
+  if (!state.allProgress) {
+    state.allProgress = {
+      totalSteps: 0,
+      completedSteps: 0,
+      currentStepKey: stepKey,
+      steps: [],
+    };
+    return;
+  }
+  state.allProgress.currentStepKey = stepKey;
+}
+
+export function appendAllCollectStepResult(
+  userId: string,
+  result: { key: string; ok: boolean; message: string; recordCount: number; errorCount: number }
+): void {
+  const state = stateMap.get(userId);
+  if (!state || state.runningKind !== "all") return;
+  if (!state.allProgress) {
+    state.allProgress = {
+      totalSteps: 0,
+      completedSteps: 0,
+      currentStepKey: null,
+      steps: [],
+    };
+  }
+  state.allProgress.steps.push(result);
+  state.allProgress.completedSteps = state.allProgress.steps.length;
+  state.allProgress.currentStepKey = null;
 }

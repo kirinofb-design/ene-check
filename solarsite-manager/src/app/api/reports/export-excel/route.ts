@@ -59,6 +59,8 @@ function endOfMonthUtc(year: number, month: number): Date {
 
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000; // UTC+9
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const XLS_RECOMMENDED_READY_HOUR_JST = 5;
+const XLS_RECOMMENDED_READY_MINUTE_JST = 30;
 
 /**
  * 日本時間(JST, UTC+9)基準で「昨日」の終了 23:59:59.999 に相当する UTC の Date を返す。
@@ -72,6 +74,18 @@ function yesterdayEndJstAsUtc(): Date {
   // JST の「昨日」の終了 = (昨日+1)日目の 00:00:00 JST の 1ms 前
   const endOfYesterdayJstMs = (jstYesterdayDays + 1) * MS_PER_DAY - JST_OFFSET_MS - 1;
   return new Date(endOfYesterdayJstMs);
+}
+
+function jstNowParts(): { year: number; month: number; day: number; hour: number; minute: number } {
+  const nowMs = Date.now();
+  const jst = new Date(nowMs + JST_OFFSET_MS);
+  return {
+    year: jst.getUTCFullYear(),
+    month: jst.getUTCMonth() + 1,
+    day: jst.getUTCDate(),
+    hour: jst.getUTCHours(),
+    minute: jst.getUTCMinutes(),
+  };
 }
 
 function listDates(start: Date, end: Date): string[] {
@@ -105,6 +119,11 @@ export async function GET(request: Request) {
     // 「当月は昨日まで」の「昨日」を JST (UTC+9) 基準で計算
     const cutoff = yesterdayEndJstAsUtc();
     const end = monthEnd.getTime() < cutoff.getTime() ? monthEnd : cutoff;
+    const nowJst = jstNowParts();
+    const isCurrentJstMonth = year === nowJst.year && month === nowJst.month;
+    const isBeforeRecommendedTime =
+      nowJst.hour < XLS_RECOMMENDED_READY_HOUR_JST ||
+      (nowJst.hour === XLS_RECOMMENDED_READY_HOUR_JST && nowJst.minute < XLS_RECOMMENDED_READY_MINUTE_JST);
 
     const dates = listDates(start, end);
     const dateHeaders = dates.map(ymdSlash);
@@ -169,6 +188,16 @@ export async function GET(request: Request) {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${fileName}"`,
+        "X-Excel-Cutoff-Date": ymd(end),
+        "X-Excel-Recommended-Ready-Time-JST": `${String(XLS_RECOMMENDED_READY_HOUR_JST).padStart(2, "0")}:${String(
+          XLS_RECOMMENDED_READY_MINUTE_JST
+        ).padStart(2, "0")}`,
+        "X-Excel-Notice":
+          isCurrentJstMonth && isBeforeRecommendedTime
+            ? `当月データは毎朝${String(XLS_RECOMMENDED_READY_HOUR_JST).padStart(2, "0")}:${String(
+                XLS_RECOMMENDED_READY_MINUTE_JST
+              ).padStart(2, "0")} JST以降のダウンロードを推奨します。`
+            : "",
       },
     });
   } catch (e) {

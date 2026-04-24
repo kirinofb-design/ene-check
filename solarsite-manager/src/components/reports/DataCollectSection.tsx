@@ -220,6 +220,11 @@ export default function DataCollectSection() {
           runningKind?: string | null;
           allCancelRequested?: boolean;
           message?: string | null;
+          allProgress?: {
+            totalSteps?: number;
+            completedSteps?: number;
+            currentStepKey?: string | null;
+          } | null;
         };
         if (cancelled) return;
         const running = !!data?.allRunning || !!data?.singleRunning;
@@ -227,11 +232,25 @@ export default function DataCollectSection() {
         setAllLocked(running);
         setRunningKind(typeof data?.runningKind === "string" ? data.runningKind : null);
         setAllCancelRequested(cancelRequested);
+        const totalSteps = Number(data?.allProgress?.totalSteps ?? 0);
+        const completedSteps = Number(data?.allProgress?.completedSteps ?? 0);
+        const currentStepKey =
+          typeof data?.allProgress?.currentStepKey === "string" ? data.allProgress.currentStepKey : null;
+        const currentStepLabel = currentStepKey ? collectorStepLabel[currentStepKey] ?? currentStepKey : null;
+        const progressSuffix =
+          running && totalSteps > 0
+            ? `（進捗 ${Math.min(completedSteps, totalSteps)}/${totalSteps}${
+                currentStepLabel ? `・実行中: ${currentStepLabel}` : ""
+              }）`
+            : "";
         setLockMessage(
           running
             ? data?.message ?? "実行中（排他ロック中）です。完了してから再実行してください。"
             : null
         );
+        if (running && progressSuffix) {
+          setLockMessage((prev) => `${prev ?? "実行中です。"}${progressSuffix}`);
+        }
         scheduleNext(running ? RUNNING_POLL_MS : IDLE_POLL_MS);
       } catch {
         if (cancelled) return;
@@ -390,8 +409,13 @@ export default function DataCollectSection() {
             </button>
           </div>
           <p style={{ fontSize: '11px', color: '#64748b', marginTop: '10px', lineHeight: 1.5, marginBottom: 0 }}>
-            6システムを同時に実行します（完了までの時間は、もっとも遅い処理にほぼ一致します）。
+            6システムを分割して順次実行します。各システム完了ごとにDBへ保存されるため、途中停止時も完了分は保持されます。
           </p>
+          {allLocked && lockMessage ? (
+            <p style={{ fontSize: '11px', color: '#334155', marginTop: '6px', lineHeight: 1.5, marginBottom: 0 }}>
+              {lockMessage}
+            </p>
+          ) : null}
         </div>
       </div>
     </div>

@@ -24,6 +24,7 @@ export async function GET(request: Request) {
       runningKind: state.runningKind,
       smaRunning: state.smaRunning,
       allCancelRequested: state.allCancelRequested,
+      allProgress: state.allProgress,
       message: (allRunning || singleRunning)
         ? state.allCancelRequested
           ? "実行取消を受け付けています。進行中処理の区切りで停止します。"

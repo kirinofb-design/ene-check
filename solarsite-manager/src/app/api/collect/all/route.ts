@@ -10,7 +10,14 @@ import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { runSmaCollector } from "@/lib/smaCollector";
 import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
-import { acquireCollectorLock, isCollectorCancelRequested, releaseCollectorLock } from "@/lib/collectorLock";
+import {
+  acquireCollectorLock,
+  appendAllCollectStepResult,
+  initializeAllCollectProgress,
+  isCollectorCancelRequested,
+  markAllCollectStepStarted,
+  releaseCollectorLock,
+} from "@/lib/collectorLock";
 import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
 import { applyForcedZeroOverrides, parseYmdToUtcDate } from "@/lib/forcedZeroRules";
@@ -129,17 +136,38 @@ export async function POST(request: Request) {
       // Vercel では複数コレクターが同時に Chromium を起動すると /tmp 配下の実行ファイル競合で
       // `spawn ETXTBSY` が起きることがあるため、起動前に一度だけ解決しておく。
       await prewarmVercelChromiumExecutable();
-      // 6 システムを同時起動（所要時間の短縮）。SQLite では同時書き込みでロックが出ることがある。
-      steps = await Promise.all([
-        runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)),
-        runNamedCollector("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)),
-        runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)),
-        runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)),
-        runSolarMonitorStep("solar-monitor-sf", "Solar Monitor（池新田・本社）データ取得が完了しました。"),
-        runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
-      ]);
+      // 同時実行の高負荷を避けるため、6システムを順次実行する。
+      const runners: Array<{
+        key: string;
+        run: () => Promise<CollectorStepResult>;
+      }> = [
+        { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
+        { key: "fusion-solar", run: () => runNamedCollector("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)) },
+        { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
+        { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
+        {
+          key: "solar-monitor-sf",
+          run: () => runSolarMonitorStep("solar-monitor-sf", "Solar Monitor（池新田・本社）データ取得が完了しました。"),
+        },
+        {
+          key: "solar-monitor-se",
+          run: () => runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
+        },
+      ];
+      initializeAllCollectProgress(userId, runners.length);
+      steps = [];
+      for (const runner of runners) {
+        if (isCollectorCancelRequested(userId, "all")) {
+          cancelled = true;
+          break;
+        }
+        markAllCollectStepStarted(userId, runner.key);
+        const stepResult = await runner.run();
+        steps.push(stepResult);
+        appendAllCollectStepResult(userId, stepResult);
+      }
 
-      cancelled = isCollectorCancelRequested(userId, "all");
+      cancelled = cancelled || isCollectorCancelRequested(userId, "all");
       if (!cancelled) {
         await applyPostCollectOverrides(startDate, endDate);
       }
