@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptSecret } from "@/lib/encryption";
 import { MONITORING_AUTH_TARGETS } from "@/lib/monitoringSystemsAuth";
 import { logger } from "@/lib/logger";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 
 export type SystemId =
   | "eco-megane"
@@ -55,7 +56,7 @@ async function importPlaywright() {
 async function tryFill(page: any, selector: string, value: string) {
   try {
     const loc = page.locator(selector);
-    await loc.first().waitFor({ state: "visible", timeout: 2000 });
+    await loc.first().waitFor({ state: "visible", timeout: 5000 });
     await loc.first().fill(value);
     return true;
   } catch {
@@ -66,7 +67,7 @@ async function tryFill(page: any, selector: string, value: string) {
 async function tryClick(page: any, selector: string) {
   try {
     const loc = page.locator(selector);
-    await loc.first().waitFor({ state: "visible", timeout: 2000 });
+    await loc.first().waitFor({ state: "visible", timeout: 5000 });
     await loc.first().click();
     return true;
   } catch {
@@ -187,8 +188,8 @@ async function loginEcoMegane(page: any, loginId: string, password: string, time
 async function loginFusionSolar(page: any, loginId: string, password: string, timeoutMs: number) {
   await page.goto(getTarget("fusion-solar").url, { waitUntil: "domcontentloaded" });
 
-  // FusionSolar はSPAで要素が遅れて出ることが多い
-  const idSelCandidates = [
+  // FusionSolar はSPAで要素が遅れて出ることが多いため、collector実装相当の待機を行う
+  const idSelCandidates: string[] = [
     "input#username",
     'input[name="username"]',
     'input[placeholder*="ユーザー" i]',
@@ -196,7 +197,7 @@ async function loginFusionSolar(page: any, loginId: string, password: string, ti
     'input[name*="user" i]',
     'input[type="text"]',
   ];
-  const pwSelCandidates = ['input#value', 'input[name="password"]', 'input[type="password"]'];
+  const pwSelCandidates: string[] = ['input#value', 'input[name="password"]', 'input[type="password"]'];
   const loginBtnCandidates = [
     "#btn_outerverify",
     'button:has-text("ログイン")',
@@ -204,26 +205,37 @@ async function loginFusionSolar(page: any, loginId: string, password: string, ti
     'button[type="submit"]',
   ];
 
-  // フォームが出るのを待つ
-  await waitAny(page, [...idSelCandidates, ...pwSelCandidates], Math.min(timeoutMs, 20000));
-
-  let ok = false;
-  for (const sel of idSelCandidates) {
-    if (await tryFill(page, sel, loginId)) {
-      ok = true;
-      break;
+  const formWaitMs = Math.min(timeoutMs, 45_000);
+  const started = Date.now();
+  let idFilled = false;
+  let pwFilled = false;
+  while (Date.now() - started < formWaitMs) {
+    if (!idFilled) {
+      for (const sel of idSelCandidates) {
+        const loc = page.locator(sel).first();
+        if ((await loc.count().catch(() => 0)) > 0 && (await loc.isVisible().catch(() => false))) {
+          await loc.fill(loginId).catch(() => {});
+          idFilled = true;
+          break;
+        }
+      }
     }
-  }
-  if (!ok) throw new Error("login id input not found (fusion-solar)");
-
-  ok = false;
-  for (const sel of pwSelCandidates) {
-    if (await tryFill(page, sel, password)) {
-      ok = true;
-      break;
+    if (!pwFilled) {
+      for (const sel of pwSelCandidates) {
+        const loc = page.locator(sel).first();
+        if ((await loc.count().catch(() => 0)) > 0 && (await loc.isVisible().catch(() => false))) {
+          await loc.fill(password).catch(() => {});
+          pwFilled = true;
+          break;
+        }
+      }
     }
+    if (idFilled && pwFilled) break;
+    await page.waitForTimeout(250);
   }
-  if (!ok) throw new Error("password input not found (fusion-solar)");
+
+  if (!idFilled) throw new Error("login id input not found (fusion-solar)");
+  if (!pwFilled) throw new Error("password input not found (fusion-solar)");
 
   let clicked = false;
   for (const sel of loginBtnCandidates) {
@@ -253,7 +265,18 @@ const SUNNY_PORTAL_LOGIN_URL =
   "https://login.sma.energy/auth/realms/SMA/protocol/openid-connect/auth?response_type=code&client_id=SunnyPortalClassic&client_secret=baa6d5fe-f905-4fb2-bc8e-8f218acc2835&redirect_uri=https%3a%2f%2fwww.sunnyportal.com%2fTemplates%2fStart.aspx&ui_locales=ja";
 
 async function loginSunnyPortal(page: any, loginId: string, password: string, timeoutMs: number) {
-  await page.goto(SUNNY_PORTAL_LOGIN_URL, { waitUntil: "domcontentloaded" });
+  try {
+    await page.goto(SUNNY_PORTAL_LOGIN_URL, { waitUntil: "domcontentloaded" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/ERR_INSUFFICIENT_RESOURCES/i.test(msg)) {
+      // Vercel上で稀に出るため、短い待機後に1回だけリトライ
+      await page.waitForTimeout(1200);
+      await page.goto(SUNNY_PORTAL_LOGIN_URL, { waitUntil: "domcontentloaded" });
+    } else {
+      throw e;
+    }
+  }
 
   // デバッグ用スクリーンショット
   const debugScreenshotPath = path.join(os.tmpdir(), "sunny-portal-debug.png");
@@ -459,38 +482,17 @@ export async function autoLogin(
     };
   }
 
-  let pw: Awaited<ReturnType<typeof importPlaywright>>;
-  try {
-    pw = await importPlaywright();
-  } catch (e) {
-    logger.error("autoLogin playwright import failed", { extra: { systemId }, userId }, e);
-    return {
-      systemId,
-      ok: false,
-      message:
-        "接続テスト実行環境の初期化に失敗しました（playwright の読み込みに失敗）。",
-    };
+  let browser: Awaited<ReturnType<typeof importPlaywright>>["chromium"] extends {
+    launch: (...args: any[]) => Promise<infer B>;
   }
-
-  let browser: Awaited<ReturnType<typeof pw.chromium.launch>>;
+    ? B
+    : any;
   try {
-    const onVercel = process.env.VERCEL === "1" || process.env.VERCEL === "true";
-    if (onVercel) {
-      const chromiumMod = await import("@sparticuz/chromium");
-      const chromium = chromiumMod.default ?? chromiumMod;
-      const executablePath = await chromium.executablePath();
-      browser = await pw.chromium.launch({
-        executablePath,
-        args: chromium.args,
-        headless: true,
-        slowMo: opts.slowMoMs,
-      });
-    } else {
-      browser = await pw.chromium.launch({
-        headless: opts.headless ?? true,
-        slowMo: opts.slowMoMs,
-      });
-    }
+    browser = await launchChromiumForRuntime({
+      headless: opts.headless ?? true,
+      slowMoMs: opts.slowMoMs,
+      extraArgs: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-setuid-sandbox"],
+    });
   } catch (e) {
     logger.error("autoLogin chromium launch failed", { extra: { systemId }, userId }, e);
     const detail =
