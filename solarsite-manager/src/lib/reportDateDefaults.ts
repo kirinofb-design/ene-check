@@ -5,14 +5,16 @@ function localYmd(year: number, monthIndex: number, day: number): string {
   return `${year}-${m}-${d}`;
 }
 
-/** データ収集: 開始＝当月1日、終了＝当日 */
+/** データ収集: 開始＝当月1日、終了＝前日 */
 export function defaultCollectDateRange(): { startDate: string; endDate: string } {
   const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const y = yesterday.getFullYear();
+  const m = yesterday.getMonth();
   return {
     startDate: localYmd(y, m, 1),
-    endDate: localYmd(y, m, now.getDate()),
+    endDate: localYmd(y, m, yesterday.getDate()),
   };
 }
 

@@ -246,16 +246,62 @@ async function loginFusionSolar(page: any, loginId: string, password: string, ti
   }
   if (!clicked) throw new Error("login submit button not found (fusion-solar)");
 
+  const urlLooksLoggedIn = (hrefRaw: string) => {
+    const href = hrefRaw.toLowerCase();
+    if (href.includes("/unisso/login")) return false;
+    if (href.includes("#/login")) return false;
+    if (href.includes("/login") && href.includes("unisso")) return false;
+    if (href.includes("/netecowebext/")) return true;
+    if (href.includes("/pvmswebsite/")) return true;
+    if (href.includes("/netecowebext/home")) return true;
+    return false;
+  };
+
   try {
     await page.waitForFunction(
       () => {
-        const href = location.href.toLowerCase();
-        return !href.includes("/unisso/login") && !href.includes("#/login");
+        const href = location.href;
+        const lower = href.toLowerCase();
+        if (lower.includes("/unisso/login")) return false;
+        if (lower.includes("#/login")) return false;
+        if (lower.includes("/login") && lower.includes("unisso")) return false;
+        if (lower.includes("/netecowebext/")) return true;
+        if (lower.includes("/pvmswebsite/")) return true;
+        if (lower.includes("/netecowebext/home")) return true;
+        return false;
       },
       { timeout: timeoutMs }
     );
   } catch {
-    throw new Error("fusion-solar login did not complete");
+    // URL監視だけでは取りこぼすことがあるため、ホームへ直接遷移して再判定
+    const fallbackTargets = [
+      "https://jp5.fusionsolar.huawei.com/netecowebext/home/index.html",
+      "https://jp5.fusionsolar.huawei.com/pvmswebsite/assets/build/index.html#/view/home",
+    ];
+    let recovered = false;
+    for (const target of fallbackTargets) {
+      try {
+        await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        const current = String(page.url() ?? "");
+        if (urlLooksLoggedIn(current)) {
+          recovered = true;
+          break;
+        }
+        const hasLoginInput =
+          (await page.locator("input#username").count().catch(() => 0)) > 0 &&
+          (await page.locator("input#username").first().isVisible().catch(() => false));
+        if (!hasLoginInput) {
+          // ログイン入力欄が消えていればセッション有効とみなす
+          recovered = true;
+          break;
+        }
+      } catch {
+        // try next
+      }
+    }
+    if (!recovered) {
+      throw new Error("fusion-solar login did not complete");
+    }
   }
   await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
 }

@@ -378,19 +378,24 @@ export async function runFusionSolarCollector(
       });
     }
 
-    const context = storageStateJson
-      ? await browser.newContext({
+    const newContext = async (useStorageState: boolean) => {
+      if (useStorageState && storageStateJson) {
+        return browser.newContext({
           storageState: JSON.parse(storageStateJson),
           userAgent:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
           locale: "ja-JP",
-        })
-      : await browser.newContext({
-          userAgent:
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          locale: "ja-JP",
         });
-    const page = await context.newPage();
+      }
+      return browser.newContext({
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        locale: "ja-JP",
+      });
+    };
+
+    let context = await newContext(Boolean(storageStateJson));
+    let page = await context.newPage();
     page.setDefaultTimeout(60_000);
     await context
       .addInitScript(() => {
@@ -401,6 +406,23 @@ export async function runFusionSolarCollector(
     if (!storageStateJson) {
       await loginFusionSolar(page, loginId, password, userId);
     }
+
+    const recreateSessionPage = async (reason: string) => {
+      logger.warn("fusionSolarCollector: recreate browser context", {
+        userId,
+        extra: { reason },
+      });
+      await context.close().catch(() => {});
+      context = await newContext(false);
+      page = await context.newPage();
+      page.setDefaultTimeout(60_000);
+      await context
+        .addInitScript(() => {
+          Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+        })
+        .catch(() => {});
+      await loginFusionSolar(page, loginId, password, userId);
+    };
 
     const months = getMonthsInRange(start, end);
     const allStations = await orderStationsByCoverage(FUSION_SOLAR_STATIONS, start, end, userId);
@@ -446,8 +468,15 @@ export async function runFusionSolarCollector(
                 userId,
                 extra: { url: page.url(), station: station.name },
               });
-              // ここで再ログインを試すと同一ステーションで長時間ハングしやすいため即スキップする
-              throw new Error("FusionSolar: reportページで再ログイン要求が出たため即スキップしました。");
+              await recreateSessionPage("report page requires relogin");
+              await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
+              await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+              const stillLogin =
+                (await page.locator("input#username").count()) > 0 &&
+                (await page.locator("input#username").first().isVisible().catch(() => false));
+              if (stillLogin) {
+                throw new Error("FusionSolar: relogin後もreportページへ遷移できません（login loop）。");
+              }
             }
 
             // ページ読み込み完了を待つ
@@ -594,7 +623,7 @@ export async function runFusionSolarCollector(
           }
 
           try {
-            await loginFusionSolar(page, loginId, password, userId);
+            await recreateSessionPage("station/month retry");
             allRows = await collectRows();
           } catch (retryErr) {
             logger.warn("fusionSolarCollector: station/month retry failed, skip", {
