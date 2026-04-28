@@ -446,16 +446,8 @@ export async function runFusionSolarCollector(
                 userId,
                 extra: { url: page.url(), station: station.name },
               });
-              await loginFusionSolar(page, loginId, password, userId);
-              await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
-              await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-              // 再ログイン後もログイン画面に戻る場合は、この発電所/月は早めに見切って次へ進む
-              const stillLogin =
-                (await page.locator("input#username").count()) > 0 &&
-                (await page.locator("input#username").first().isVisible().catch(() => false));
-              if (stillLogin) {
-                throw new Error("FusionSolar: relogin後もreportページへ遷移できません（login loop）。");
-              }
+              // ここで再ログインを試すと同一ステーションで長時間ハングしやすいため即スキップする
+              throw new Error("FusionSolar: reportページで再ログイン要求が出たため即スキップしました。");
             }
 
             // ページ読み込み完了を待つ
