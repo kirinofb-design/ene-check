@@ -28,6 +28,7 @@ const FUSION_SOLAR_STATIONS = [
   { name: "フジ物産御前崎市佐倉高圧発電所", ne: "33559317" },
 ];
 const MAX_TABLE_PAGES_PER_STATION_MONTH = 20;
+const REPORT_PAGE_READY_TIMEOUT_MS = 35_000;
 
 function isYmd(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -97,6 +98,7 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
   let pwFilled = false;
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    throwIfAllCollectCancelled(userId);
     if (Date.now() - start > hardTimeoutMs) {
       throw new Error("FusionSolar: ログインフォームの入力欄が表示されませんでした（タイムアウト）。");
     }
@@ -165,9 +167,23 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
     return false;
   };
 
+  const waitForLoggedInUrlWithCancel = async (timeoutMs: number): Promise<void> => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      throwIfAllCollectCancelled(userId);
+      try {
+        await page.waitForURL(urlLooksLoggedIn, { timeout: 3_000 });
+        return;
+      } catch {
+        // retry with cancel check
+      }
+    }
+    throw new Error("FusionSolar: ログイン完了URLの待機がタイムアウトしました。");
+  };
+
   try {
     await Promise.all([
-      page.waitForURL(urlLooksLoggedIn, { timeout: 120_000 }),
+      waitForLoggedInUrlWithCancel(120_000),
       // クリックが効かないケースがあるため Enter 送信も併用する
       (async () => {
         await loginBtn.click();
@@ -175,9 +191,38 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
       })(),
     ]);
   } catch {
-    const url = page.url();
-    const title = await page.title().catch(() => "(title取得失敗)");
-    throw new Error(`FusionSolar: ログイン完了を確認できませんでした（url=${url}, title=${title}）。`);
+    // まれに URL 監視が取りこぼすため、認証後ホームへ直接遷移して再判定する
+    const fallbackTargets = [
+      `${BASE_URL}/netecowebext/home/index.html`,
+      `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/home`,
+    ];
+    let recovered = false;
+    for (const target of fallbackTargets) {
+      throwIfAllCollectCancelled(userId);
+      try {
+        await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45_000 });
+        const current = page.url();
+        if (urlLooksLoggedIn(new URL(current))) {
+          recovered = true;
+          break;
+        }
+        const hasLoginInput =
+          (await page.locator("input#username").count()) > 0 &&
+          (await page.locator("input#username").first().isVisible().catch(() => false));
+        if (!hasLoginInput) {
+          // URL 形はログインURLのままでも、入力欄が消えていればセッション確立済みとして継続
+          recovered = true;
+          break;
+        }
+      } catch {
+        // try next fallback target
+      }
+    }
+    if (!recovered) {
+      const url = page.url();
+      const title = await page.title().catch(() => "(title取得失敗)");
+      throw new Error(`FusionSolar: ログイン完了を確認できませんでした（url=${url}, title=${title}）。`);
+    }
   }
 
   await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
@@ -404,11 +449,18 @@ export async function runFusionSolarCollector(
               await loginFusionSolar(page, loginId, password, userId);
               await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
               await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+              // 再ログイン後もログイン画面に戻る場合は、この発電所/月は早めに見切って次へ進む
+              const stillLogin =
+                (await page.locator("input#username").count()) > 0 &&
+                (await page.locator("input#username").first().isVisible().catch(() => false));
+              if (stillLogin) {
+                throw new Error("FusionSolar: relogin後もreportページへ遷移できません（login loop）。");
+              }
             }
 
             // ページ読み込み完了を待つ
-            await page.waitForSelector(".ant-picker-input input", { timeout: 90_000 });
-            await page.waitForTimeout(2000);
+            await page.waitForSelector(".ant-picker-input input", { timeout: REPORT_PAGE_READY_TIMEOUT_MS });
+            await page.waitForTimeout(800);
 
             // 粒度を「月別」に切り替え（UI差異で候補が出ないケースがあるため、失敗しても継続）
             const granularityEl = page.locator("span.ant-select-selection-item").first();
@@ -479,8 +531,8 @@ export async function runFusionSolarCollector(
                 extra: { station: station.name, yearMonth, url: page.url() },
               });
             }
-            await page.waitForSelector("table tbody tr", { timeout: 30000 }).catch(() => {});
-            await page.waitForTimeout(1500);
+            await page.waitForSelector("table tbody tr", { timeout: 20_000 }).catch(() => {});
+            await page.waitForTimeout(800);
 
             // ページネーション対応: 日付範囲外になったら早期打ち切りして高速化する
             const rows: { dateStr: string; pcsKwhText: string }[] = [];
