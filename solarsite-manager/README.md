@@ -96,3 +96,16 @@ solarsite-manager/
 ```
 
 詳細な開発計画は親ディレクトリの `doc/02masterplan.md`（マスタープラン）を参照してください。
+
+## 本番向け無料運用（GitHub Actions）
+
+Vercel 実行環境でブラウザ収集が不安定な場合は、リポジトリの GitHub Actions
+`collect-fanout.yml` を使って無料枠で分離実行できます。
+
+- 必要な GitHub Secrets
+  - `COLLECT_BASE_URL`（例: `https://ene-check.vercel.app`）
+  - `CRON_SECRET`（Vercel 側と同じ値）
+  - `CRON_COLLECT_USER_ID`（任意。指定時はこのユーザーの認証情報で収集）
+- 実行方法
+  - Actions > `Collect Fanout` > Run workflow
+  - `startDate` / `endDate` を空で実行すると JST 当月1日〜昨日で実行
