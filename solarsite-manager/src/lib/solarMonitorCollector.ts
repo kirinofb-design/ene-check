@@ -122,10 +122,15 @@ export async function runSolarMonitorCollector(
       siteByPlant.set(plant.optionText, hit);
     }
 
-    let browser = await launchChromiumForRuntime({
-      headless: true,
-      extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-    });
+    const launchSolarMonitorBrowser = async (stableMode = false) =>
+      launchChromiumForRuntime({
+        headless: true,
+        extraArgs: stableMode
+          ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+          : ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+      });
+
+    let browser = await launchSolarMonitorBrowser();
 
     let recordCount = 0;
     let errorCount = 0;
@@ -136,10 +141,7 @@ export async function runSolarMonitorCollector(
           return await browser.newContext({ acceptDownloads: true });
         } catch {
           await browser.close().catch(() => {});
-          browser = await launchChromiumForRuntime({
-            headless: true,
-            extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-          });
+          browser = await launchSolarMonitorBrowser(true);
           return await browser.newContext({ acceptDownloads: true });
         }
       };

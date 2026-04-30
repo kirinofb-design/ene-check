@@ -836,10 +836,15 @@ export async function runLaplaceCollector(
     userId,
     extra: { headful, envHeadful: process.env.LAPLACE_DEBUG_HEADFUL ?? null, nodeEnv: process.env.NODE_ENV ?? null },
   });
-  let browser = await launchChromiumForRuntime({
-    headless: !headful,
-    extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-  });
+  const launchLaplaceBrowser = async (stableMode = false) =>
+    launchChromiumForRuntime({
+      headless: !headful,
+      extraArgs: stableMode
+        ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+        : ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+    });
+
+  let browser = await launchLaplaceBrowser();
   let recordCount = 0;
   let errorCount = 0;
 
@@ -856,10 +861,7 @@ export async function runLaplaceCollector(
         return await create();
       } catch {
         await browser.close().catch(() => {});
-        browser = await launchChromiumForRuntime({
-          headless: !headful,
-          extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        });
+        browser = await launchLaplaceBrowser(true);
         return await create();
       }
     };

@@ -415,10 +415,15 @@ export async function runFusionSolarCollector(
     return DEFAULT_WALL_BUDGET_MS;
   })();
 
-  let browser = await launchChromiumForRuntime({
-    headless: true,
-    extraArgs: ["--disable-blink-features=AutomationControlled"],
-  });
+  const launchFusionBrowser = async (stableMode = false) =>
+    launchChromiumForRuntime({
+      headless: true,
+      extraArgs: stableMode
+        ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+        : ["--disable-blink-features=AutomationControlled"],
+    });
+
+  let browser = await launchFusionBrowser();
 
   let recordCount = 0;
   let errorCount = 0;
@@ -477,10 +482,7 @@ export async function runFusionSolarCollector(
         return await create();
       } catch {
         await browser.close().catch(() => {});
-        browser = await launchChromiumForRuntime({
-          headless: true,
-          extraArgs: ["--disable-blink-features=AutomationControlled"],
-        });
+        browser = await launchFusionBrowser(true);
         return await create();
       }
     };
