@@ -32,6 +32,7 @@ jobs:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
       COLLECT_USER_ID: ${{ secrets.CRON_COLLECT_USER_ID }}
+      COLLECT_USER_EMAIL: ${{ secrets.CRON_COLLECT_USER_EMAIL }}
       INPUT_START_DATE: ${{ github.event.inputs.startDate }}
       INPUT_END_DATE: ${{ github.event.inputs.endDate }}
       SYSTEM_ID: ${{ matrix.system }}
@@ -84,6 +85,7 @@ jobs:
             const startDate = process.env.START_DATE || "";
             const endDate = process.env.END_DATE || "";
             const userId = (process.env.COLLECT_USER_ID || "").trim();
+            const userEmail = (process.env.COLLECT_USER_EMAIL || "").trim();
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
@@ -99,6 +101,7 @@ jobs:
               const url = `${base}/api/collect/system`;
               const payload = { system, startDate, endDate };
               if (userId) payload.userId = userId;
+              else if (userEmail) payload.userEmail = userEmail;
               let last = null;
               for (let attempt = 1; attempt <= 3; attempt++) {
                 const res = await fetch(url, {

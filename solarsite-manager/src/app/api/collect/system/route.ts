@@ -74,11 +74,13 @@ export async function POST(request: Request) {
     startDate?: string;
     endDate?: string;
     userId?: string;
+    userEmail?: string;
   };
   const system = body.system;
   const startDate = String(body.startDate ?? "");
   const endDate = String(body.endDate ?? "");
   const requestedUserId = String(body.userId ?? "").trim();
+  const requestedUserEmail = String(body.userEmail ?? "").trim();
 
   if (!system || !startDate || !endDate) {
     return NextResponse.json(
@@ -87,7 +89,10 @@ export async function POST(request: Request) {
     );
   }
 
-  const userId = requestedUserId || (await resolveInternalUserId());
+  const userByEmail = requestedUserEmail
+    ? await prisma.user.findUnique({ where: { email: requestedUserEmail }, select: { id: true } })
+    : null;
+  const userId = requestedUserId || userByEmail?.id || (await resolveInternalUserId());
   if (!userId) {
     return NextResponse.json(
       { ok: false, message: "実行ユーザーを特定できません。", recordCount: 0, errorCount: 0 },
