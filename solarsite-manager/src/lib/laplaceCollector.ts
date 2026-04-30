@@ -836,7 +836,7 @@ export async function runLaplaceCollector(
 
   try {
     throwIfAllCollectCancelled(userId);
-    const context = await browser.newContext({
+    let context = await browser.newContext({
       acceptDownloads: true,
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -850,23 +850,60 @@ export async function runLaplaceCollector(
     await loginLaplace(page, loginId, password);
     page = await openGrandArchFromServiceList(page);
 
+    const recreateLaplaceSession = async () => {
+      await context.close().catch(() => {});
+      const newContext = await browser.newContext({
+        acceptDownloads: true,
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      });
+      await newContext.addInitScript(() => {
+        Object.defineProperty(navigator, "webdriver", { get: () => false });
+      });
+      const newPage = await newContext.newPage();
+      newPage.setDefaultTimeout(60_000);
+      await loginLaplace(newPage, loginId, password);
+      const opened = await openGrandArchFromServiceList(newPage);
+      context = newContext;
+      return { context: newContext, page: opened };
+    };
+
     const months = getMonthsInRange(start, end);
     for (const yearMonth of months) {
       throwIfAllCollectCancelled(userId);
-      await navigateToDownloadFromTop(page);
-      const download = await configureLaplaceDownloadForm(page, yearMonth);
-      const zipPath = path.join(os.tmpdir(), `laplace-${yearMonth}-${Date.now()}.zip`);
-      await download.saveAs(zipPath);
-      const csvText = await readZipFirstCsvAsText(zipPath);
-      await fs.unlink(zipPath).catch(() => {});
+      const runMonth = async () => {
+        await navigateToDownloadFromTop(page);
+        const download = await configureLaplaceDownloadForm(page, yearMonth);
+        const zipPath = path.join(os.tmpdir(), `laplace-${yearMonth}-${Date.now()}.zip`);
+        await download.saveAs(zipPath);
+        const csvText = await readZipFirstCsvAsText(zipPath);
+        await fs.unlink(zipPath).catch(() => {});
 
-      const monthResult = await parseAndUpsertLaplaceCsv(csvText, start, end);
-      recordCount += monthResult.recordCount;
-      errorCount += monthResult.errorCount;
-      logger.info("laplaceCollector: month processed", {
-        userId,
-        extra: { yearMonth, recordCount: monthResult.recordCount, errorCount: monthResult.errorCount },
-      });
+        const monthResult = await parseAndUpsertLaplaceCsv(csvText, start, end);
+        recordCount += monthResult.recordCount;
+        errorCount += monthResult.errorCount;
+        logger.info("laplaceCollector: month processed", {
+          userId,
+          extra: { yearMonth, recordCount: monthResult.recordCount, errorCount: monthResult.errorCount },
+        });
+      };
+
+      try {
+        await runMonth();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const isClosedTarget =
+          msg.includes("Target page, context or browser has been closed") || msg.includes("Execution context was destroyed");
+        if (!isClosedTarget) throw e;
+
+        logger.warn("laplaceCollector: month failed by closed target, retry with relogin", {
+          userId,
+          extra: { yearMonth, error: msg },
+        });
+        const recovered = await recreateLaplaceSession();
+        page = recovered.page;
+        await runMonth();
+      }
     }
 
     // CSVに日が存在しない場合でも、停止中サイトの強制0ルールを必ず反映する

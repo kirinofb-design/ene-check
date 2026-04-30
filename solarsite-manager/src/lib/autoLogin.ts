@@ -373,13 +373,25 @@ async function loginSunnyPortal(page: any, loginId: string, password: string, ti
     "form input[type='submit']",
   ];
 
-  const idOk = await tryFillWithSelectors(page, idSelectors, loginId);
+  await waitAny(page, [...idSelectors, ...pwSelectors, "iframe"], Math.min(timeoutMs, 25_000));
+
+  // 一部環境ではログインフォームが iframe 内に描画されるため、main/frame 両方を試す
+  const targets: any[] = [page, ...(typeof page.frames === "function" ? page.frames() : [])];
+
+  let idOk = false;
+  let pwOk = false;
+  let submitOk = false;
+  for (const target of targets) {
+    idOk = await tryFillWithSelectors(target, idSelectors, loginId);
+    if (!idOk) continue;
+    pwOk = await tryFillWithSelectors(target, pwSelectors, password);
+    if (!pwOk) continue;
+    submitOk = await tryClickWithSelectors(target, submitSelectors);
+    if (submitOk) break;
+  }
+
   if (!idOk) throw new Error("login id input not found (sunny-portal)");
-
-  const pwOk = await tryFillWithSelectors(page, pwSelectors, password);
   if (!pwOk) throw new Error("password input not found (sunny-portal)");
-
-  const submitOk = await tryClickWithSelectors(page, submitSelectors);
   if (!submitOk) throw new Error("login submit button not found (sunny-portal)");
 
   await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
