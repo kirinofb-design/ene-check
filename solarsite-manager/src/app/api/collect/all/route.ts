@@ -30,6 +30,13 @@ type CollectorStepResult = {
   errorCount: number;
 };
 
+function diffDaysInclusive(startDate: string, endDate: string): number {
+  const s = Date.parse(`${startDate}T00:00:00.000Z`);
+  const e = Date.parse(`${endDate}T00:00:00.000Z`);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 0;
+  return Math.floor((e - s) / (24 * 60 * 60 * 1000)) + 1;
+}
+
 async function applyPostCollectOverrides(startDate: string, endDate: string): Promise<void> {
   const reqStart = parseYmdToUtcDate(startDate);
   const reqEnd = parseYmdToUtcDate(endDate);
@@ -137,12 +144,28 @@ export async function POST(request: Request) {
       // `spawn ETXTBSY` が起きることがあるため、起動前に一度だけ解決しておく。
       await prewarmVercelChromiumExecutable();
       // 同時実行の高負荷を避けるため、6システムを順次実行する。
+      const requestDays = diffDaysInclusive(startDate, endDate);
+      const fusionBudgetMs =
+        process.env.NODE_ENV === "production"
+          ? requestDays > 7
+            ? 90_000
+            : requestDays > 3
+              ? 120_000
+              : 150_000
+          : undefined;
+
       const runners: Array<{
         key: string;
         run: () => Promise<CollectorStepResult>;
       }> = [
         { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
-        { key: "fusion-solar", run: () => runNamedCollector("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)) },
+        {
+          key: "fusion-solar",
+          run: () =>
+            runNamedCollector("fusion-solar", () =>
+              runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs: fusionBudgetMs })
+            ),
+        },
         { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
         { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
         {

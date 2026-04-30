@@ -8,6 +8,10 @@ import type { Page } from "playwright-core";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
+const HOME_URL_CANDIDATES = [
+  `${BASE_URL}/netecowebext/home/index.html`,
+  `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/home`,
+];
 
 /**
  * 実行時間の上限。
@@ -29,6 +33,10 @@ const FUSION_SOLAR_STATIONS = [
 ];
 const MAX_TABLE_PAGES_PER_STATION_MONTH = 20;
 const REPORT_PAGE_READY_TIMEOUT_MS = 35_000;
+const DEFAULT_STATION_MONTH_ATTEMPT_TIMEOUT_MS =
+  process.env.NODE_ENV === "production" ? 180_000 : 240_000;
+const MIN_STATION_MONTH_ATTEMPT_TIMEOUT_MS = 10_000;
+const LOGIN_COMPLETION_TIMEOUT_MS = process.env.NODE_ENV === "production" ? 25_000 : 35_000;
 
 function isYmd(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -183,7 +191,7 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
 
   try {
     await Promise.all([
-      waitForLoggedInUrlWithCancel(120_000),
+      waitForLoggedInUrlWithCancel(LOGIN_COMPLETION_TIMEOUT_MS),
       // クリックが効かないケースがあるため Enter 送信も併用する
       (async () => {
         await loginBtn.click();
@@ -225,7 +233,64 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
     }
   }
 
-  await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+}
+
+async function looksLikeLoginPage(page: Page): Promise<boolean> {
+  const usernameVisible =
+    (await page.locator("input#username").count().catch(() => 0)) > 0 &&
+    (await page.locator("input#username").first().isVisible().catch(() => false));
+  if (usernameVisible) return true;
+  const url = page.url().toLowerCase();
+  return url.includes("/unisso/login") || url.includes("#/login");
+}
+
+async function ensureFusionSessionAndReportReady(
+  page: Page,
+  stationReportUrl: string,
+  loginId: string,
+  password: string,
+  userId: string,
+  stationName: string
+): Promise<void> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    throwIfAllCollectCancelled(userId);
+
+    let homeReached = false;
+    for (const homeUrl of HOME_URL_CANDIDATES) {
+      throwIfAllCollectCancelled(userId);
+      try {
+        await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
+        await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+        if (!(await looksLikeLoginPage(page))) {
+          homeReached = true;
+          break;
+        }
+      } catch {
+        // try next home candidate
+      }
+    }
+
+    if (!homeReached) {
+      logger.warn("fusionSolarCollector: home check failed, relogin", {
+        userId,
+        extra: { station: stationName, attempt },
+      });
+      await loginFusionSolar(page, loginId, password, userId);
+      continue;
+    }
+
+    await page.goto(stationReportUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+    if (!(await looksLikeLoginPage(page))) return;
+
+    logger.warn("fusionSolarCollector: relogin required before report page", {
+      userId,
+      extra: { url: page.url(), station: stationName, attempt },
+    });
+    await loginFusionSolar(page, loginId, password, userId);
+  }
+  throw new Error("FusionSolar: home→reportの2段階セッション確認に失敗しました（login loopの可能性）。");
 }
 
 // FusionSolar の画面上の発電所名称と DB の Site.siteName のマッピング
@@ -291,6 +356,7 @@ export async function runFusionSolarCollector(
   endDate: string,
   options?: {
     stationNeAllowList?: string[];
+    wallBudgetMs?: number;
   }
 ): Promise<{ ok: boolean; message: string; recordCount: number; errorCount: number }> {
   const start = parseYmdToUtcDate(startDate);
@@ -328,6 +394,10 @@ export async function runFusionSolarCollector(
   const password = decryptSecret(cred.encryptedPassword);
 
   const wallBudgetMs = (() => {
+    if (Number.isFinite(options?.wallBudgetMs) && (options?.wallBudgetMs ?? 0) > 30_000) {
+      if (process.env.NODE_ENV === "production") return Math.min(options!.wallBudgetMs!, 270_000);
+      return options!.wallBudgetMs!;
+    }
     const raw = Number(process.env.FUSION_SOLAR_COLLECT_BUDGET_MS);
     if (Number.isFinite(raw) && raw > 30_000) {
       // production では 300s を超えないよう安全側に抑える
@@ -344,6 +414,7 @@ export async function runFusionSolarCollector(
 
   let recordCount = 0;
   let errorCount = 0;
+  let consecutiveLoginLoopCount = 0;
   // Vercel の実行時間上限に収めるため、壁時計は関数実行開始時点から計測する
   const wallStarted = Date.now();
 
@@ -432,6 +503,35 @@ export async function runFusionSolarCollector(
         : null;
     const stations = allowSet ? allStations.filter((s) => allowSet.has(s.ne)) : allStations;
 
+    // ログイン直後は最初の report 遷移が不安定なことがあるため、
+    // 末尾（既存データが多い＝比較的安定）発電所で1回セッションを温めてから本処理へ入る
+    if (stations.length > 1) {
+      const warmupStation = stations[stations.length - 1];
+      const warmupReportUrl = STATION_REPORT_URL_TEMPLATE.replace("{ne}", warmupStation.ne);
+      try {
+        logger.info("fusionSolarCollector: warmup session before main loop", {
+          userId,
+          extra: { station: warmupStation.name, ne: warmupStation.ne },
+        });
+        await ensureFusionSessionAndReportReady(
+          page,
+          warmupReportUrl,
+          loginId,
+          password,
+          userId,
+          `${warmupStation.name}(warmup)`
+        );
+      } catch (e) {
+        logger.warn("fusionSolarCollector: warmup failed, continue main loop", {
+          userId,
+          extra: {
+            station: warmupStation.name,
+            error: e instanceof Error ? e.message : String(e),
+          },
+        });
+      }
+    }
+
     // 発電所ごと × 月ごとにループ
     for (const station of stations) {
       throwIfAllCollectCancelled(userId);
@@ -456,28 +556,14 @@ export async function runFusionSolarCollector(
         });
 
         const collectRows = async () => {
-            await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
-            await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-
-            // セッション切れ等でログイン画面に戻ることがあるため、必要なら再ログインしてから待つ
-            const needsRelogin =
-              (await page.locator("input#username").count()) > 0 &&
-              (await page.locator("input#username").first().isVisible().catch(() => false));
-            if (needsRelogin) {
-              logger.warn("fusionSolarCollector: relogin required before report page", {
-                userId,
-                extra: { url: page.url(), station: station.name },
-              });
-              await recreateSessionPage("report page requires relogin");
-              await page.goto(stationReportUrl, { waitUntil: "domcontentloaded" });
-              await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-              const stillLogin =
-                (await page.locator("input#username").count()) > 0 &&
-                (await page.locator("input#username").first().isVisible().catch(() => false));
-              if (stillLogin) {
-                throw new Error("FusionSolar: relogin後もreportページへ遷移できません（login loop）。");
-              }
-            }
+            await ensureFusionSessionAndReportReady(
+              page,
+              stationReportUrl,
+              loginId,
+              password,
+              userId,
+              station.name
+            );
 
             // ページ読み込み完了を待つ
             await page.waitForSelector(".ant-picker-input input", { timeout: REPORT_PAGE_READY_TIMEOUT_MS });
@@ -603,18 +689,62 @@ export async function runFusionSolarCollector(
             return rows;
         };
 
+        // 月別画面の応答が遅い日でも取りこぼさないよう、残り時間に合わせてタイムアウトを調整する
+        const stationMonthAttemptTimeoutMs = Math.max(
+          MIN_STATION_MONTH_ATTEMPT_TIMEOUT_MS,
+          Math.min(DEFAULT_STATION_MONTH_ATTEMPT_TIMEOUT_MS, remaining - 5_000)
+        );
+
+        const collectRowsWithTimeout = async () =>
+          Promise.race([
+            collectRows(),
+            new Promise<Array<{ dateStr: string; pcsKwhText: string }>>((_, reject) =>
+              setTimeout(
+                () =>
+                  reject(
+                    new Error(
+                      `FusionSolar: station/monthの処理がタイムアウトしました（${stationMonthAttemptTimeoutMs}ms）。`
+                    )
+                  ),
+                stationMonthAttemptTimeoutMs
+              )
+            ),
+          ]);
+
         let allRows: Array<{ dateStr: string; pcsKwhText: string }> = [];
         try {
-          allRows = await collectRows();
+          allRows = await collectRowsWithTimeout();
         } catch (firstErr) {
+          const firstErrMessage = firstErr instanceof Error ? firstErr.message : String(firstErr);
           logger.warn("fusionSolarCollector: station/month first attempt failed, retry with relogin", {
             userId,
             extra: {
               station: station.name,
               yearMonth,
-              error: firstErr instanceof Error ? firstErr.message : String(firstErr),
+              error: firstErrMessage,
             },
           });
+
+          // report遷移時のlogin loopは、再セッション作成しても同じ失敗を繰り返しやすい。
+          // 重い再ログインを抑制し、次の発電所へ進んで全体完了を優先する。
+          if (firstErrMessage.includes("再ログイン要求") || firstErrMessage.includes("login loop")) {
+            consecutiveLoginLoopCount++;
+            logger.warn("fusionSolarCollector: skip retry for login-loop pattern", {
+              userId,
+              extra: { station: station.name, yearMonth, consecutiveLoginLoopCount },
+            });
+            if (consecutiveLoginLoopCount >= 3) {
+              return {
+                ok: false,
+                message:
+                  "FusionSolar側で再ログインループが連続発生したため中断しました。時間を空けて再実行するか、対象期間を短くして実行してください。",
+                recordCount,
+                errorCount,
+              };
+            }
+            errorCount++;
+            continue;
+          }
 
           const retryRemaining = wallBudgetMs - (Date.now() - wallStarted);
           if (retryRemaining < 20_000) {
@@ -624,7 +754,7 @@ export async function runFusionSolarCollector(
 
           try {
             await recreateSessionPage("station/month retry");
-            allRows = await collectRows();
+            allRows = await collectRowsWithTimeout();
           } catch (retryErr) {
             logger.warn("fusionSolarCollector: station/month retry failed, skip", {
               userId,
@@ -638,6 +768,7 @@ export async function runFusionSolarCollector(
             continue;
           }
         }
+        consecutiveLoginLoopCount = 0;
 
         const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
         const site = await prisma.site.findFirst({
