@@ -63,6 +63,34 @@ async function runNamedCollector(
   }
 }
 
+function looksLikeTransientCollectorError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("err_insufficient_resources") ||
+    m.includes("detached frame") ||
+    m.includes("execution context was destroyed") ||
+    m.includes("target page, context or browser has been closed")
+  );
+}
+
+async function runCollectorWithRetry(
+  key: string,
+  runner: () => Promise<CollectorStepResult>
+): Promise<CollectorStepResult> {
+  const first = await runner();
+  if (first.ok) return first;
+  if (!looksLikeTransientCollectorError(first.message)) return first;
+
+  // Vercel の一時的なブラウザ/フレーム不安定を吸収するため1回だけ再実行する
+  await new Promise((r) => setTimeout(r, 1500));
+  const second = await runner();
+  if (second.ok) return second;
+  return {
+    ...second,
+    message: `${second.message}（再試行後も失敗）`,
+  };
+}
+
 export async function POST(request: Request) {
   try {
     const session = await requireAuth(request);
@@ -159,13 +187,6 @@ export async function POST(request: Request) {
         run: () => Promise<CollectorStepResult>;
       }> = [
         { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
-        {
-          key: "fusion-solar",
-          run: () =>
-            runNamedCollector("fusion-solar", () =>
-              runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs: fusionBudgetMs })
-            ),
-        },
         { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
         { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
         {
@@ -176,6 +197,13 @@ export async function POST(request: Request) {
           key: "solar-monitor-se",
           run: () => runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
         },
+        {
+          key: "fusion-solar",
+          run: () =>
+            runNamedCollector("fusion-solar", () =>
+              runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs: fusionBudgetMs })
+            ),
+        },
       ];
       initializeAllCollectProgress(userId, runners.length);
       steps = [];
@@ -185,7 +213,7 @@ export async function POST(request: Request) {
           break;
         }
         markAllCollectStepStarted(userId, runner.key);
-        const stepResult = await runner.run();
+        const stepResult = await runCollectorWithRetry(runner.key, runner.run);
         steps.push(stepResult);
         appendAllCollectStepResult(userId, stepResult);
       }
