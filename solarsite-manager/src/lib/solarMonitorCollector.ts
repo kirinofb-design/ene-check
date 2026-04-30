@@ -145,15 +145,27 @@ export async function runSolarMonitorCollector(
           return await browser.newContext({ acceptDownloads: true });
         }
       };
+      const createPage = async (contextObj: Awaited<ReturnType<typeof createBrowserContext>>) => {
+        try {
+          return await contextObj.newPage();
+        } catch {
+          await contextObj.close().catch(() => {});
+          await browser.close().catch(() => {});
+          browser = await launchSolarMonitorBrowser(true);
+          const newContext = await createBrowserContext();
+          context = newContext;
+          return await newContext.newPage();
+        }
+      };
 
       let context = await createBrowserContext();
-      let page = await context.newPage();
+      let page = await createPage(context);
       page.setDefaultTimeout(60_000);
 
       const createSession = async () => {
         await context.close().catch(() => {});
         context = await createBrowserContext();
-        page = await context.newPage();
+        page = await createPage(context);
         page.setDefaultTimeout(60_000);
         await loginAndOpenSolarMonitorMenu(page, {
           loginUrl: cfg.loginUrl,

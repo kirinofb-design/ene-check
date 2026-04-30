@@ -478,6 +478,12 @@ async function openGrandArchFromServiceList(page: any): Promise<any> {
     }
 
     if (!clicked) {
+      // UI が崩れている場合の最終フォールバック: Grand Arch へ直接遷移してみる
+      await page.goto(LAPLACE_DATA_BASE_URL, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+      await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+      if (/grandarch\.energymntr\.com/i.test(page.url())) {
+        return page;
+      }
       const links = (await page
         .$$eval("a, button", (els: Element[]) =>
           els.map((e) => ({
@@ -865,12 +871,27 @@ export async function runLaplaceCollector(
         return await create();
       }
     };
+    const createPage = async (contextObj: Awaited<ReturnType<typeof createContext>>) => {
+      try {
+        return await contextObj.newPage();
+      } catch {
+        await contextObj.close().catch(() => {});
+        await browser.close().catch(() => {});
+        browser = await launchLaplaceBrowser(true);
+        const newContext = await createContext();
+        await newContext.addInitScript(() => {
+          Object.defineProperty(navigator, "webdriver", { get: () => false });
+        });
+        context = newContext;
+        return await newContext.newPage();
+      }
+    };
 
     let context = await createContext();
     await context.addInitScript(() => {
       Object.defineProperty(navigator, "webdriver", { get: () => false });
     });
-    let page = await context.newPage();
+    let page = await createPage(context);
     page.setDefaultTimeout(60_000);
 
     const loginAndOpen = async () => {
@@ -891,7 +912,7 @@ export async function runLaplaceCollector(
       await context.addInitScript(() => {
         Object.defineProperty(navigator, "webdriver", { get: () => false });
       });
-      page = await context.newPage();
+      page = await createPage(context);
       page.setDefaultTimeout(60_000);
       await loginAndOpen();
     }
@@ -902,7 +923,7 @@ export async function runLaplaceCollector(
       await newContext.addInitScript(() => {
         Object.defineProperty(navigator, "webdriver", { get: () => false });
       });
-      const newPage = await newContext.newPage();
+      const newPage = await createPage(newContext);
       newPage.setDefaultTimeout(60_000);
       await loginLaplace(newPage, loginId, password);
       const opened = await openGrandArchFromServiceList(newPage);
