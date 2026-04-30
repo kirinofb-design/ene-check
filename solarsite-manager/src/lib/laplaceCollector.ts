@@ -788,6 +788,15 @@ export async function runLaplaceCollector(
   startDate: string,
   endDate: string
 ): Promise<{ ok: boolean; message: string; recordCount: number; errorCount: number }> {
+  const isRetryableLaplaceError = (e: unknown): boolean => {
+    const msg = e instanceof Error ? e.message : String(e);
+    return (
+      msg.includes("ERR_INSUFFICIENT_RESOURCES") ||
+      msg.includes("Execution context was destroyed") ||
+      msg.includes("Target page, context or browser has been closed") ||
+      msg.includes("ログイン後もログイン画面のまま")
+    );
+  };
   const start = parseYmdToUtcDate(startDate);
   const end = parseYmdToUtcDate(endDate);
   if (!start || !end) {
@@ -847,8 +856,32 @@ export async function runLaplaceCollector(
     let page = await context.newPage();
     page.setDefaultTimeout(60_000);
 
-    await loginLaplace(page, loginId, password);
-    page = await openGrandArchFromServiceList(page);
+    const loginAndOpen = async () => {
+      await loginLaplace(page, loginId, password);
+      page = await openGrandArchFromServiceList(page);
+    };
+
+    try {
+      await loginAndOpen();
+    } catch (e) {
+      if (!isRetryableLaplaceError(e)) throw e;
+      logger.warn("laplaceCollector: initial login/open failed, retry with fresh session", {
+        userId,
+        extra: { error: e instanceof Error ? e.message : String(e) },
+      });
+      await context.close().catch(() => {});
+      context = await browser.newContext({
+        acceptDownloads: true,
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      });
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, "webdriver", { get: () => false });
+      });
+      page = await context.newPage();
+      page.setDefaultTimeout(60_000);
+      await loginAndOpen();
+    }
 
     const recreateLaplaceSession = async () => {
       await context.close().catch(() => {});

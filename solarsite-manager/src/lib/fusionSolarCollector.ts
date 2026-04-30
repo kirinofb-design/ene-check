@@ -81,9 +81,6 @@ function getMonthsInRange(startDate: Date, endDate: Date): string[] {
 
 async function loginFusionSolar(page: Page, loginId: string, password: string, userId: string) {
   // autoLogin の FusionSolar 手順に寄せる（SPA で要素出現が遅い）
-  logger.info("fusionSolarCollector: navigating to login", { extra: { url: BASE_URL }, userId });
-  await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
-
   const idSelCandidates = [
     "input#username",
     'input[name="username"]',
@@ -100,47 +97,58 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
     'button[type="submit"]',
   ];
 
-  const start = Date.now();
-  const hardTimeoutMs = 45_000;
+  const hardTimeoutMs = process.env.NODE_ENV === "production" ? 70_000 : 45_000;
   let idFilled = false;
   let pwFilled = false;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    throwIfAllCollectCancelled(userId);
-    if (Date.now() - start > hardTimeoutMs) {
-      throw new Error("FusionSolar: ログインフォームの入力欄が表示されませんでした（タイムアウト）。");
-    }
+  for (let navAttempt = 1; navAttempt <= 2; navAttempt++) {
+    logger.info("fusionSolarCollector: navigating to login", {
+      extra: { url: BASE_URL, navAttempt },
+      userId,
+    });
+    await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
 
-    if (!idFilled) {
-      for (const sel of idSelCandidates) {
-        const loc = page.locator(sel).first();
-        if (await loc.count()) {
-          const visible = await loc.isVisible().catch(() => false);
-          if (visible) {
-            await loc.fill(loginId);
-            idFilled = true;
-            break;
+    const start = Date.now();
+    idFilled = false;
+    pwFilled = false;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      throwIfAllCollectCancelled(userId);
+      if (Date.now() - start > hardTimeoutMs) {
+        break;
+      }
+
+      if (!idFilled) {
+        for (const sel of idSelCandidates) {
+          const loc = page.locator(sel).first();
+          if (await loc.count()) {
+            const visible = await loc.isVisible().catch(() => false);
+            if (visible) {
+              await loc.fill(loginId);
+              idFilled = true;
+              break;
+            }
           }
         }
       }
-    }
 
-    if (!pwFilled) {
-      for (const sel of pwSelCandidates) {
-        const loc = page.locator(sel).first();
-        if (await loc.count()) {
-          const visible = await loc.isVisible().catch(() => false);
-          if (visible) {
-            await loc.fill(password);
-            pwFilled = true;
-            break;
+      if (!pwFilled) {
+        for (const sel of pwSelCandidates) {
+          const loc = page.locator(sel).first();
+          if (await loc.count()) {
+            const visible = await loc.isVisible().catch(() => false);
+            if (visible) {
+              await loc.fill(password);
+              pwFilled = true;
+              break;
+            }
           }
         }
       }
-    }
 
+      if (idFilled && pwFilled) break;
+      await page.waitForTimeout(250);
+    }
     if (idFilled && pwFilled) break;
-    await page.waitForTimeout(250);
   }
 
   if (!idFilled || !pwFilled) {

@@ -131,16 +131,24 @@ export async function runSolarMonitorCollector(
     let errorCount = 0;
 
     try {
-      const context = await browser.newContext({ acceptDownloads: true });
-      const page = await context.newPage();
+      let context = await browser.newContext({ acceptDownloads: true });
+      let page = await context.newPage();
       page.setDefaultTimeout(60_000);
 
-      await loginAndOpenSolarMonitorMenu(page, {
-        loginUrl: cfg.loginUrl,
-        loginId,
-        password,
-        openPlantListFromMenu: systemId === "solar-monitor-se",
-      });
+      const createSession = async () => {
+        await context.close().catch(() => {});
+        context = await browser.newContext({ acceptDownloads: true });
+        page = await context.newPage();
+        page.setDefaultTimeout(60_000);
+        await loginAndOpenSolarMonitorMenu(page, {
+          loginUrl: cfg.loginUrl,
+          loginId,
+          password,
+          openPlantListFromMenu: systemId === "solar-monitor-se",
+        });
+      };
+
+      await createSession();
 
       const links = await page.$$eval("#cphMain_gvList a", (els) =>
         els.map((e) => ({ text: e.textContent?.trim() ?? "", id: (e as HTMLAnchorElement).id ?? "" }))
@@ -158,12 +166,27 @@ export async function runSolarMonitorCollector(
         for (const yearMonth of months) {
           throwIfAllCollectCancelled(userId);
           const [yearStr, monthStr] = yearMonth.split("-");
-          const rows = await collectSolarMonitor({
-            page,
-            siteName: plant.linkKeyword,
-            year: Number(yearStr),
-            month: Number(monthStr),
-          });
+          const collectMonthRows = async () =>
+            collectSolarMonitor({
+              page,
+              siteName: plant.linkKeyword,
+              year: Number(yearStr),
+              month: Number(monthStr),
+            });
+
+          let rows: Awaited<ReturnType<typeof collectMonthRows>> = [];
+          try {
+            rows = await collectMonthRows();
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const retryable =
+              msg.includes("Execution context was destroyed") ||
+              msg.includes("Target page, context or browser has been closed") ||
+              msg.includes("ERR_INSUFFICIENT_RESOURCES");
+            if (!retryable) throw e;
+            await createSession();
+            rows = await collectMonthRows();
+          }
           let savedInMonth = 0;
           for (const row of rows) {
             throwIfAllCollectCancelled(userId);
