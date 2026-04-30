@@ -84,8 +84,10 @@ jobs:
             const system = process.env.SYSTEM_ID || "";
             const startDate = process.env.START_DATE || "";
             const endDate = process.env.END_DATE || "";
-            const userId = (process.env.COLLECT_USER_ID || "").trim();
-            const userEmail = (process.env.COLLECT_USER_EMAIL || "").trim();
+            const userIdRaw = (process.env.COLLECT_USER_ID || "").trim();
+            const userEmailRaw = (process.env.COLLECT_USER_EMAIL || "").trim();
+            const userId = userIdRaw.includes("@") ? "" : userIdRaw;
+            const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const transient = (m) => {
               const s = String(m || "").toLowerCase();

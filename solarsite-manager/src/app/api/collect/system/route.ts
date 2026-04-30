@@ -79,8 +79,11 @@ export async function POST(request: Request) {
   const system = body.system;
   const startDate = String(body.startDate ?? "");
   const endDate = String(body.endDate ?? "");
-  const requestedUserId = String(body.userId ?? "").trim();
-  const requestedUserEmail = String(body.userEmail ?? "").trim();
+  const requestedUserIdRaw = String(body.userId ?? "").trim();
+  const requestedUserEmailRaw = String(body.userEmail ?? "").trim();
+  const requestedUserId = requestedUserIdRaw.includes("@") ? "" : requestedUserIdRaw;
+  const requestedUserEmail =
+    requestedUserEmailRaw || (requestedUserIdRaw.includes("@") ? requestedUserIdRaw : "");
 
   if (!system || !startDate || !endDate) {
     return NextResponse.json(
