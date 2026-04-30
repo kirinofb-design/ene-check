@@ -79,17 +79,20 @@ async function runCollectorWithRetry(
   key: string,
   runner: () => Promise<CollectorStepResult>
 ): Promise<CollectorStepResult> {
-  const first = await runner();
-  if (first.ok) return first;
-  if (!looksLikeTransientCollectorError(first.message)) return first;
-
-  // Vercel の一時的なブラウザ/フレーム不安定を吸収するため1回だけ再実行する
-  await new Promise((r) => setTimeout(r, 1500));
-  const second = await runner();
-  if (second.ok) return second;
+  const maxAttempts = 3;
+  let last: CollectorStepResult | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await runner();
+    if (result.ok) return result;
+    last = result;
+    if (!looksLikeTransientCollectorError(result.message)) return result;
+    if (attempt >= maxAttempts) break;
+    const waitMs = attempt === 1 ? 1500 : 3500;
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
   return {
-    ...second,
-    message: `${second.message}（再試行後も失敗）`,
+    ...(last ?? { key, ok: false, message: "collector failed", recordCount: 0, errorCount: 0 }),
+    message: `${last?.message ?? "collector failed"}（再試行後も失敗）`,
   };
 }
 

@@ -33,6 +33,17 @@ function diffDaysInclusive(startDate: string, endDate: string): number {
   return Math.floor((e - s) / (24 * 60 * 60 * 1000)) + 1;
 }
 
+function looksLikeTransientCollectorError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("err_insufficient_resources") ||
+    m.includes("detached frame") ||
+    m.includes("execution context was destroyed") ||
+    m.includes("target page, context or browser has been closed") ||
+    m.includes("browsercontext.newpage")
+  );
+}
+
 async function resolveInternalUserId(): Promise<string | null> {
   const byId = process.env.CRON_COLLECT_USER_ID?.trim();
   if (byId) return byId;
@@ -131,7 +142,16 @@ export async function POST(request: Request) {
   };
 
   try {
-    const result = await run();
+    const maxAttempts = 3;
+    let result: CollectResult = { ok: false, message: "collector failed", recordCount: 0, errorCount: 0 };
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      result = await run();
+      if (result.ok) break;
+      if (!looksLikeTransientCollectorError(result.message)) break;
+      if (attempt >= maxAttempts) break;
+      const waitMs = attempt === 1 ? 1500 : 3500;
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
     return NextResponse.json(result);
   } catch (e) {
     return NextResponse.json(
