@@ -93,6 +93,13 @@ async function runCollectorWithRetry(
   };
 }
 
+function canUseFanoutMode(): boolean {
+  if (process.env.NODE_ENV !== "production") return false;
+  if (!process.env.CRON_SECRET) return false;
+  if (process.env.COLLECT_FANOUT_MODE === "0") return false;
+  return true;
+}
+
 export async function POST(request: Request) {
   try {
     const session = await requireAuth(request);
@@ -209,13 +216,45 @@ export async function POST(request: Request) {
       ];
       initializeAllCollectProgress(userId, runners.length);
       steps = [];
+
+      const useFanout = canUseFanoutMode();
+      const origin = new URL(request.url).origin;
+
       for (const runner of runners) {
         if (isCollectorCancelRequested(userId, "all")) {
           cancelled = true;
           break;
         }
         markAllCollectStepStarted(userId, runner.key);
-        const stepResult = await runCollectorWithRetry(runner.key, runner.run);
+        const stepResult = useFanout
+          ? await runCollectorWithRetry(runner.key, async () => {
+              const res = await fetch(`${origin}/api/collect/system`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  authorization: `Bearer ${process.env.CRON_SECRET}`,
+                },
+                body: JSON.stringify({
+                  system: runner.key,
+                  startDate,
+                  endDate,
+                }),
+              });
+              const payload = (await res.json()) as {
+                ok?: boolean;
+                message?: string;
+                recordCount?: number;
+                errorCount?: number;
+              };
+              return {
+                key: runner.key,
+                ok: Boolean(payload.ok),
+                message: String(payload.message ?? ""),
+                recordCount: Number(payload.recordCount ?? 0),
+                errorCount: Number(payload.errorCount ?? 0),
+              };
+            })
+          : await runCollectorWithRetry(runner.key, runner.run);
         steps.push(stepResult);
         appendAllCollectStepResult(userId, stepResult);
       }
