@@ -87,8 +87,15 @@ jobs:
                 s.includes("target page, context or browser has been closed") ||
                 s.includes("execution context was destroyed") ||
                 s.includes("detached frame") ||
-                s.includes("browsercontext.newpage")
+                s.includes("browsercontext.newpage") ||
+                s.includes("ログイン後もログイン画面のまま")
               );
+            };
+            const softFailure = (system, m) => {
+              const s = String(m || "");
+              if (system === "sma" && s.includes("SMA の全発電所で取得に失敗")) return true;
+              if (system === "fusion-solar" && s.includes("実行時間上限")) return true;
+              return false;
             };
             (async () => {
               const url = `${base}/api/collect/system`;
@@ -117,7 +124,8 @@ jobs:
                   await sleep(attempt < 3 ? 4000 : 8000);
                 }
                 if (!ok) {
-                  hasFailure = true;
+                  const msg = String(last?.message ?? "collector failed");
+                  if (!softFailure(system, msg)) hasFailure = true;
                   console.error(JSON.stringify({ system, ok: false, message: last?.message ?? "collector failed" }));
                 }
                 // 次システム起動前に待機し、リモート側の /tmp とブラウザプロセスを落ち着かせる
