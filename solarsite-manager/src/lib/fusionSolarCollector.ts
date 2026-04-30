@@ -415,7 +415,7 @@ export async function runFusionSolarCollector(
     return DEFAULT_WALL_BUDGET_MS;
   })();
 
-  const browser = await launchChromiumForRuntime({
+  let browser = await launchChromiumForRuntime({
     headless: true,
     extraArgs: ["--disable-blink-features=AutomationControlled"],
   });
@@ -458,19 +458,31 @@ export async function runFusionSolarCollector(
     }
 
     const newContext = async (useStorageState: boolean) => {
-      if (useStorageState && storageStateJson) {
+      const create = async () => {
+        if (useStorageState && storageStateJson) {
+          return browser.newContext({
+            storageState: JSON.parse(storageStateJson),
+            userAgent:
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale: "ja-JP",
+          });
+        }
         return browser.newContext({
-          storageState: JSON.parse(storageStateJson),
           userAgent:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
           locale: "ja-JP",
         });
+      };
+      try {
+        return await create();
+      } catch {
+        await browser.close().catch(() => {});
+        browser = await launchChromiumForRuntime({
+          headless: true,
+          extraArgs: ["--disable-blink-features=AutomationControlled"],
+        });
+        return await create();
       }
-      return browser.newContext({
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        locale: "ja-JP",
-      });
     };
 
     let context = await newContext(Boolean(storageStateJson));

@@ -836,7 +836,7 @@ export async function runLaplaceCollector(
     userId,
     extra: { headful, envHeadful: process.env.LAPLACE_DEBUG_HEADFUL ?? null, nodeEnv: process.env.NODE_ENV ?? null },
   });
-  const browser = await launchChromiumForRuntime({
+  let browser = await launchChromiumForRuntime({
     headless: !headful,
     extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
   });
@@ -845,11 +845,26 @@ export async function runLaplaceCollector(
 
   try {
     throwIfAllCollectCancelled(userId);
-    let context = await browser.newContext({
-      acceptDownloads: true,
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    });
+    const createContext = async () => {
+      const create = async () =>
+        browser.newContext({
+          acceptDownloads: true,
+          userAgent:
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        });
+      try {
+        return await create();
+      } catch {
+        await browser.close().catch(() => {});
+        browser = await launchChromiumForRuntime({
+          headless: !headful,
+          extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        });
+        return await create();
+      }
+    };
+
+    let context = await createContext();
     await context.addInitScript(() => {
       Object.defineProperty(navigator, "webdriver", { get: () => false });
     });
@@ -870,11 +885,7 @@ export async function runLaplaceCollector(
         extra: { error: e instanceof Error ? e.message : String(e) },
       });
       await context.close().catch(() => {});
-      context = await browser.newContext({
-        acceptDownloads: true,
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      });
+      context = await createContext();
       await context.addInitScript(() => {
         Object.defineProperty(navigator, "webdriver", { get: () => false });
       });
@@ -885,11 +896,7 @@ export async function runLaplaceCollector(
 
     const recreateLaplaceSession = async () => {
       await context.close().catch(() => {});
-      const newContext = await browser.newContext({
-        acceptDownloads: true,
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      });
+      const newContext = await createContext();
       await newContext.addInitScript(() => {
         Object.defineProperty(navigator, "webdriver", { get: () => false });
       });

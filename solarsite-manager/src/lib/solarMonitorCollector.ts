@@ -122,7 +122,7 @@ export async function runSolarMonitorCollector(
       siteByPlant.set(plant.optionText, hit);
     }
 
-    const browser = await launchChromiumForRuntime({
+    let browser = await launchChromiumForRuntime({
       headless: true,
       extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
     });
@@ -131,13 +131,26 @@ export async function runSolarMonitorCollector(
     let errorCount = 0;
 
     try {
-      let context = await browser.newContext({ acceptDownloads: true });
+      const createBrowserContext = async () => {
+        try {
+          return await browser.newContext({ acceptDownloads: true });
+        } catch {
+          await browser.close().catch(() => {});
+          browser = await launchChromiumForRuntime({
+            headless: true,
+            extraArgs: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+          });
+          return await browser.newContext({ acceptDownloads: true });
+        }
+      };
+
+      let context = await createBrowserContext();
       let page = await context.newPage();
       page.setDefaultTimeout(60_000);
 
       const createSession = async () => {
         await context.close().catch(() => {});
-        context = await browser.newContext({ acceptDownloads: true });
+        context = await createBrowserContext();
         page = await context.newPage();
         page.setDefaultTimeout(60_000);
         await loginAndOpenSolarMonitorMenu(page, {
