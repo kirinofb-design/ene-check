@@ -62,10 +62,12 @@ export async function POST(request: Request) {
     system?: CollectSystemId;
     startDate?: string;
     endDate?: string;
+    userId?: string;
   };
   const system = body.system;
   const startDate = String(body.startDate ?? "");
   const endDate = String(body.endDate ?? "");
+  const requestedUserId = String(body.userId ?? "").trim();
 
   if (!system || !startDate || !endDate) {
     return NextResponse.json(
@@ -74,7 +76,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const userId = await resolveInternalUserId();
+  const userId = requestedUserId || (await resolveInternalUserId());
   if (!userId) {
     return NextResponse.json(
       { ok: false, message: "実行ユーザーを特定できません。", recordCount: 0, errorCount: 0 },

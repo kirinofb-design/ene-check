@@ -238,6 +238,7 @@ export async function POST(request: Request) {
                   system: runner.key,
                   startDate,
                   endDate,
+                  userId,
                 }),
               });
               const payload = (await res.json()) as {
