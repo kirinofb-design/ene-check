@@ -52,13 +52,6 @@ async function runSerializedOnVercel<T>(task: () => Promise<T>): Promise<T> {
 const CHROMIUM_BIN = join(tmpdir(), "chromium");
 const CHROMIUM_BOOTSTRAP_LOCK = join(tmpdir(), "ene-sparticuz-chromium.bootstrap.lock");
 
-/** Vercel/serverless では /dev/shm が極小になりやすく、これ無しだと Chromium が「共有メモリ用 tmp が枯渇」と警告して落ちる */
-const VERCEL_CHROMIUM_STABILITY_ARGS = [
-  "--no-sandbox",
-  "--disable-setuid-sandbox",
-  "--disable-dev-shm-usage",
-] as const;
-
 /** Vercel の /tmp は容量が小さく、Warm 再利用で Playwright プロファイルが積み上がり FILE_ERROR_NO_SPACE になりやすい */
 const PLAYWRIGHT_TMP_DIR_PREFIXES = [
   "playwright_chromiumdev_profile-",
@@ -185,10 +178,7 @@ export async function launchChromiumForRuntime(opts: LaunchOpts = {}): Promise<B
         const executablePath = await resolveSparticuzExecutablePath();
         const chromiumMod = await import("@sparticuz/chromium");
         const chromium = chromiumMod.default ?? chromiumMod;
-        const args = mergeChromiumArgs(
-          chromium.args,
-          mergeChromiumArgs([...VERCEL_CHROMIUM_STABILITY_ARGS], opts.extraArgs)
-        );
+        const args = mergeChromiumArgs(chromium.args, opts.extraArgs);
         return await launchWithRetries(() =>
           pw.chromium.launch({
             executablePath,
