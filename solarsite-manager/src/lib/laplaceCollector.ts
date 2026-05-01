@@ -254,53 +254,98 @@ async function loginLaplace(page: any, loginId: string, password: string) {
   });
 
   await page.goto(LAPLACE_LOGIN_URL, { waitUntil: "domcontentloaded" });
-  // 先に name / id を優先（最初の input[type=text] は誤マッチしやすい）
+  await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+
+  // page + iframe を横断してログインUIを探索する
+  const getRoots = (): any[] => {
+    const frames = typeof page.frames === "function" ? page.frames() : [];
+    return [page, ...frames];
+  };
+
   const idSelectors = [
     'input[name="username"]',
     'input[name="loginId"]',
+    'input[name*="user"]',
+    'input[name*="mail"]',
     'input#username',
+    'input[id*="user"]',
+    'input[id*="login"]',
     'input[type="email"]',
+    'input[placeholder*="ID"]',
+    'input[placeholder*="id"]',
+    'input[aria-label*="ID"]',
+    'input[aria-label*="ユーザー"]',
     'form input[type="text"]',
     'input[type="text"]',
   ];
-  const pwSelectors = ['input[name="password"]', 'input[type="password"]'];
+  const pwSelectors = [
+    'input[name="password"]',
+    'input[name*="pass"]',
+    'input[id*="pass"]',
+    'input[placeholder*="パスワード"]',
+    'input[aria-label*="パスワード"]',
+    'input[type="password"]',
+  ];
   const btnSelectors = [
     'button[type="submit"]',
     'input[type="submit"]',
     'button:has-text("ログイン")',
     'button:has-text("Login")',
+    'button:has-text("サインイン")',
   ];
 
-  let idOk = false;
-  for (const sel of idSelectors) {
-    const loc = page.locator(sel).first();
-    if (await loc.count()) {
-      await loc.fill(loginId);
-      idOk = true;
-      break;
+  const fillIntoAnyRoot = async (selectors: string[], value: string): Promise<boolean> => {
+    for (const root of getRoots()) {
+      for (const sel of selectors) {
+        const loc = root.locator(sel).first();
+        const count = await loc.count().catch(() => 0);
+        if (!count) continue;
+        const visible = await loc.isVisible().catch(() => true);
+        if (!visible) continue;
+        await loc.click({ timeout: 3_000 }).catch(() => {});
+        await loc.fill(value, { timeout: 5_000 }).catch(() => {});
+        const filled = await loc.inputValue().catch(() => "");
+        if (filled.trim().length > 0) return true;
+      }
     }
+    return false;
+  };
+  const clickAnyRoot = async (selectors: string[]): Promise<boolean> => {
+    for (const root of getRoots()) {
+      for (const sel of selectors) {
+        const loc = root.locator(sel).first();
+        const count = await loc.count().catch(() => 0);
+        if (!count) continue;
+        const visible = await loc.isVisible().catch(() => true);
+        if (!visible) continue;
+        await loc.click({ timeout: 8_000 }).catch(() => {});
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const maxWaitMs = 25_000;
+  const started = Date.now();
+
+  let idOk = false;
+  while (!idOk && Date.now() - started < maxWaitMs) {
+    idOk = await fillIntoAnyRoot(idSelectors, loginId);
+    if (!idOk) await page.waitForTimeout(500);
   }
   if (!idOk) throw new Error("ラプラス: ログインID入力欄が見つかりません。");
 
   let pwOk = false;
-  for (const sel of pwSelectors) {
-    const loc = page.locator(sel).first();
-    if (await loc.count()) {
-      await loc.fill(password);
-      pwOk = true;
-      break;
-    }
+  while (!pwOk && Date.now() - started < maxWaitMs) {
+    pwOk = await fillIntoAnyRoot(pwSelectors, password);
+    if (!pwOk) await page.waitForTimeout(500);
   }
   if (!pwOk) throw new Error("ラプラス: パスワード入力欄が見つかりません。");
 
   let submitOk = false;
-  for (const sel of btnSelectors) {
-    const loc = page.locator(sel).first();
-    if (await loc.count()) {
-      await loc.click();
-      submitOk = true;
-      break;
-    }
+  while (!submitOk && Date.now() - started < maxWaitMs) {
+    submitOk = await clickAnyRoot(btnSelectors);
+    if (!submitOk) await page.waitForTimeout(500);
   }
   if (!submitOk) throw new Error("ラプラス: ログインボタンが見つかりません。");
 
