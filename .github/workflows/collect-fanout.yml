@@ -15,8 +15,11 @@ on:
     # JST 05:35 に実行（UTC 20:35）
     - cron: "35 20 * * *"
 
+# Vercel Warm 再利用で同一インスタンスの /tmp が連続リクエストで枯れるため、
+# Playwright をまたぐ処理を2フェーズに分割し、フェーズ間で待機して別実行へ寄せる。
 jobs:
-  collect:
+  collect_phase_a:
+    name: Collect (phase A — laplace / eco-megane / sma)
     runs-on: ubuntu-latest
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
@@ -61,7 +64,7 @@ jobs:
             require("fs").appendFileSync(out, `startDate=${ymd(start)}\nendDate=${ymd(yester)}\n`);
           '
 
-      - name: Run collectors sequentially with retries
+      - name: Run collectors sequentially with retries (phase A)
         shell: bash
         env:
           START_DATE: ${{ steps.dates.outputs.startDate }}
@@ -77,14 +80,14 @@ jobs:
             const userId = userIdRaw.includes("@") ? "" : userIdRaw;
             const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            // /tmp 枯渇回避のため、最も重い laplace を先頭で実行する
-            const systems = ["laplace", "eco-megane", "sma", "fusion-solar", "solar-monitor-sf", "solar-monitor-se"];
+            const systems = ["laplace", "eco-megane", "sma"];
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
               return (
                 s.includes("err_insufficient_resources") ||
                 s.includes("less than 64mb free space in temporary directory") ||
                 s.includes("discardable_shared_memory_manager.cc") ||
+                s.includes("file_error_no_space") ||
                 s.includes("target page, context or browser has been closed") ||
                 s.includes("execution context was destroyed") ||
                 s.includes("detached frame") ||
@@ -95,8 +98,132 @@ jobs:
             const softFailure = (system, m) => {
               const s = String(m || "");
               if (system === "sma" && s.includes("SMA の全発電所で取得に失敗")) return true;
+              return false;
+            };
+            (async () => {
+              const url = `${base}/api/collect/system`;
+              let hasFailure = false;
+              for (const system of systems) {
+                const payload = { system, startDate, endDate };
+                if (userId) payload.userId = userId;
+                else if (userEmail) payload.userEmail = userEmail;
+                let last = null;
+                let ok = false;
+                for (let attempt = 1; attempt <= 5; attempt++) {
+                  const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                      "content-type": "application/json",
+                      authorization: `Bearer ${secret}`,
+                    },
+                    body: JSON.stringify(payload),
+                  });
+                  const json = await res.json().catch(() => ({}));
+                  ok = Boolean(json.ok);
+                  console.log(JSON.stringify({ phase: "A", system, attempt, status: res.status, ok, message: json.message ?? "" }));
+                  if (ok) break;
+                  last = json;
+                  if (!transient(json.message) || attempt === 5) break;
+                  await sleep(attempt < 3 ? 4000 : 8000);
+                }
+                if (!ok) {
+                  const msg = String(last?.message ?? "collector failed");
+                  if (!softFailure(system, msg)) hasFailure = true;
+                  console.error(JSON.stringify({ phase: "A", system, ok: false, message: last?.message ?? "collector failed" }));
+                }
+                await sleep(12000);
+              }
+              if (hasFailure) process.exit(1);
+            })().catch((e) => {
+              console.error(String(e));
+              process.exit(1);
+            });
+          '
+
+  collect_phase_b:
+    name: Collect (phase B — fusion / solar-monitor)
+    needs: collect_phase_a
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      COLLECT_USER_ID: ${{ secrets.CRON_COLLECT_USER_ID }}
+      COLLECT_USER_EMAIL: ${{ secrets.CRON_COLLECT_USER_EMAIL }}
+      INPUT_START_DATE: ${{ github.event.inputs.startDate }}
+      INPUT_END_DATE: ${{ github.event.inputs.endDate }}
+    steps:
+      - name: Validate required secrets
+        run: |
+          if [ -z "${BASE_URL}" ]; then
+            echo "COLLECT_BASE_URL secret is required"
+            exit 1
+          fi
+          if [ -z "${CRON_SECRET}" ]; then
+            echo "CRON_SECRET secret is required"
+            exit 1
+          fi
+
+      - name: Resolve date range (JST)
+        id: dates
+        shell: bash
+        run: |
+          node -e '
+            const inStart = (process.env.INPUT_START_DATE || "").trim();
+            const inEnd = (process.env.INPUT_END_DATE || "").trim();
+            const ymd = (d) => d.toISOString().slice(0, 10);
+            const out = process.env.GITHUB_OUTPUT;
+            if (inStart && inEnd) {
+              require("fs").appendFileSync(out, `startDate=${inStart}\nendDate=${inEnd}\n`);
+              process.exit(0);
+            }
+            const now = Date.now();
+            const jstOffset = 9 * 60 * 60 * 1000;
+            const jst = new Date(now + jstOffset);
+            const y = jst.getUTCFullYear();
+            const m = jst.getUTCMonth();
+            const d = jst.getUTCDate();
+            const yester = new Date(Date.UTC(y, m, d - 1, 0, 0, 0, 0));
+            const start = new Date(Date.UTC(yester.getUTCFullYear(), yester.getUTCMonth(), 1, 0, 0, 0, 0));
+            require("fs").appendFileSync(out, `startDate=${ymd(start)}\nendDate=${ymd(yester)}\n`);
+          '
+
+      - name: Cool down before phase B (allow Vercel /tmp recycle)
+        run: sleep 180
+
+      - name: Run collectors sequentially with retries (phase B)
+        shell: bash
+        env:
+          START_DATE: ${{ steps.dates.outputs.startDate }}
+          END_DATE: ${{ steps.dates.outputs.endDate }}
+        run: |
+          node -e '
+            const base = (process.env.BASE_URL || "").replace(/\/+$/, "");
+            const secret = process.env.CRON_SECRET || "";
+            const startDate = process.env.START_DATE || "";
+            const endDate = process.env.END_DATE || "";
+            const userIdRaw = (process.env.COLLECT_USER_ID || "").trim();
+            const userEmailRaw = (process.env.COLLECT_USER_EMAIL || "").trim();
+            const userId = userIdRaw.includes("@") ? "" : userIdRaw;
+            const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            const systems = ["fusion-solar", "solar-monitor-sf", "solar-monitor-se"];
+            const transient = (m) => {
+              const s = String(m || "").toLowerCase();
+              return (
+                s.includes("err_insufficient_resources") ||
+                s.includes("less than 64mb free space in temporary directory") ||
+                s.includes("discardable_shared_memory_manager.cc") ||
+                s.includes("file_error_no_space") ||
+                s.includes("target page, context or browser has been closed") ||
+                s.includes("execution context was destroyed") ||
+                s.includes("detached frame") ||
+                s.includes("browsercontext.newpage") ||
+                s.includes("ログイン後もログイン画面のまま")
+              );
+            };
+            const softFailure = (system, m) => {
+              const s = String(m || "");
               if (system === "fusion-solar" && s.includes("実行時間上限")) return true;
-              // 保存0はサイト未登録・UI変化・時間不足など複合要因になりやすい。他システム成功時はジョブ全体を赤にしない。
               if (system === "fusion-solar" && s.includes("有効データを保存できませんでした")) return true;
               return false;
             };
@@ -120,7 +247,7 @@ jobs:
                   });
                   const json = await res.json().catch(() => ({}));
                   ok = Boolean(json.ok);
-                  console.log(JSON.stringify({ system, attempt, status: res.status, ok, message: json.message ?? "" }));
+                  console.log(JSON.stringify({ phase: "B", system, attempt, status: res.status, ok, message: json.message ?? "" }));
                   if (ok) break;
                   last = json;
                   if (!transient(json.message) || attempt === 5) break;
@@ -129,9 +256,8 @@ jobs:
                 if (!ok) {
                   const msg = String(last?.message ?? "collector failed");
                   if (!softFailure(system, msg)) hasFailure = true;
-                  console.error(JSON.stringify({ system, ok: false, message: last?.message ?? "collector failed" }));
+                  console.error(JSON.stringify({ phase: "B", system, ok: false, message: last?.message ?? "collector failed" }));
                 }
-                // 次システム起動前に待機し、リモート側の /tmp とブラウザプロセスを落ち着かせる
                 await sleep(12000);
               }
               if (hasFailure) process.exit(1);
