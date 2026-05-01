@@ -95,8 +95,6 @@ jobs:
               const s = String(m || "");
               if (system === "sma" && s.includes("SMA の全発電所で取得に失敗")) return true;
               if (system === "fusion-solar" && s.includes("実行時間上限")) return true;
-              // 保存0はサイト未登録・UI変化・時間不足など複合要因になりやすい。他システム成功時はジョブ全体を赤にしない。
-              if (system === "fusion-solar" && s.includes("有効データを保存できませんでした")) return true;
               return false;
             };
             (async () => {
