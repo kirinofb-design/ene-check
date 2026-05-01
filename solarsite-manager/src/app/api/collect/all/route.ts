@@ -202,6 +202,7 @@ export async function POST(request: Request) {
         key: string;
         run: () => Promise<CollectorStepResult>;
       }> = [
+        { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
         { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
         { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
         {
@@ -219,7 +220,6 @@ export async function POST(request: Request) {
           key: "solar-monitor-se",
           run: () => runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
         },
-        { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
       ];
       initializeAllCollectProgress(userId, runners.length);
       steps = [];

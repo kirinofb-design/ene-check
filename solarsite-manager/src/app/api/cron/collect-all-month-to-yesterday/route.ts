@@ -227,6 +227,7 @@ export async function GET(request: Request) {
 
     await prewarmVercelChromiumExecutable();
     const runners: Array<{ key: string; run: () => Promise<CollectorStepResult> }> = [
+      { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
       { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
       { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
       { key: "fusion-solar", run: () => runNamedCollector("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)) },
@@ -252,7 +253,6 @@ export async function GET(request: Request) {
             "Solar Monitor（須山）データ取得が完了しました。"
           ),
       },
-      { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
     ];
     steps = [];
     for (const runner of runners) {
