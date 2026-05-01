@@ -42,7 +42,8 @@ function looksLikeTransientCollectorError(message: string): boolean {
     m.includes("detached frame") ||
     m.includes("execution context was destroyed") ||
     m.includes("target page, context or browser has been closed") ||
-    m.includes("browsercontext.newpage")
+    m.includes("browsercontext.newpage") ||
+    m.includes("ログイン後もログイン画面のまま")
   );
 }
 

@@ -136,7 +136,8 @@ jobs:
                 s.includes("file_error_no_space") ||
                 s.includes("target page, context or browser has been closed") ||
                 s.includes("execution context was destroyed") ||
-                s.includes("browsercontext.newpage")
+                s.includes("browsercontext.newpage") ||
+                s.includes("ログイン後もログイン画面のまま")
               );
             };
             (async () => {
