@@ -5,7 +5,7 @@ import AdmZip from "adm-zip";
 import iconv from "iconv-lite";
 import type { Download, Page } from "playwright-core";
 import { prisma } from "@/lib/prisma";
-import { launchChromiumForRuntime, sweepVercelCollectTmpAfterBrowserClose } from "@/lib/playwrightRuntime";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
@@ -983,6 +983,5 @@ export async function runLaplaceCollector(
     throw e;
   } finally {
     await browser.close().catch(() => {});
-    await sweepVercelCollectTmpAfterBrowserClose();
   }
 }

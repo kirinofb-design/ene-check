@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/encryption";
 import { collectSolarMonitor, loginAndOpenSolarMonitorMenu } from "@/lib/solarMonitorBaseCollector";
-import { launchChromiumForRuntime, sweepVercelCollectTmpAfterBrowserClose } from "@/lib/playwrightRuntime";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 
 const TARGET_PLANTS_SF = [
@@ -268,7 +268,6 @@ export async function runSolarMonitorCollector(
       throw e;
     } finally {
       await browser.close().catch(() => {});
-      await sweepVercelCollectTmpAfterBrowserClose();
     }
 
     return { recordCount, errorCount };

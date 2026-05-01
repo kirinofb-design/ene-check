@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
-import { launchChromiumForRuntime, sweepVercelCollectTmpAfterBrowserClose } from "@/lib/playwrightRuntime";
+import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { autoLogin } from "@/lib/autoLogin";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import type { Page } from "playwright-core";
@@ -872,6 +872,5 @@ export async function runFusionSolarCollector(
     };
   } finally {
     await browser.close().catch(() => {});
-    await sweepVercelCollectTmpAfterBrowserClose();
   }
 }
