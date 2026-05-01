@@ -211,7 +211,6 @@ export async function POST(request: Request) {
               runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs: fusionBudgetMs })
             ),
         },
-        { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
         {
           key: "solar-monitor-sf",
           run: () => runSolarMonitorStep("solar-monitor-sf", "Solar Monitor（池新田・本社）データ取得が完了しました。"),
@@ -220,6 +219,7 @@ export async function POST(request: Request) {
           key: "solar-monitor-se",
           run: () => runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
         },
+        { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
       ];
       initializeAllCollectProgress(userId, runners.length);
       steps = [];

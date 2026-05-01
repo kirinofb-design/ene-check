@@ -101,6 +101,9 @@ async function cleanupVercelCollectTmpScratch(): Promise<void> {
 /** ブラウザ終了直後に呼び、次の順次収集リクエストへ `/tmp` を残さない（同一 Warm インスタンス対策） */
 export async function sweepVercelCollectTmpAfterBrowserClose(): Promise<void> {
   if (!isVercelRuntime()) return;
+  await sleep(500);
+  await cleanupVercelCollectTmpScratch();
+  await sleep(250);
   await cleanupVercelCollectTmpScratch();
 }
 

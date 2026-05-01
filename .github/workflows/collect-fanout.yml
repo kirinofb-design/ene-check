@@ -77,8 +77,8 @@ jobs:
             const userId = userIdRaw.includes("@") ? "" : userIdRaw;
             const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            // fusion-solar は /tmp を多く使うため、laplace・SolarMonitor より先に実行する
-            const systems = ["eco-megane", "sma", "fusion-solar", "laplace", "solar-monitor-sf", "solar-monitor-se"];
+            // fusion・SolarMonitor を先にし、ZIP/ダウンロードが重い laplace は最後（/tmp 枯渇で SM が落ちるのを避ける）
+            const systems = ["eco-megane", "sma", "fusion-solar", "solar-monitor-sf", "solar-monitor-se", "laplace"];
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
               return (
@@ -132,7 +132,7 @@ jobs:
                   console.error(JSON.stringify({ system, ok: false, message: last?.message ?? "collector failed" }));
                 }
                 // 次システム起動前に待機し、リモート側の /tmp とブラウザプロセスを落ち着かせる
-                await sleep(8000);
+                await sleep(12000);
               }
               if (hasFailure) process.exit(1);
             })().catch((e) => {
