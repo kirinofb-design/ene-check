@@ -839,9 +839,10 @@ export async function runLaplaceCollector(
   const launchLaplaceBrowser = async (stableMode = false) =>
     launchChromiumForRuntime({
       headless: !headful,
+      // /tmp 逼迫時の shared memory 枯渇を避けるため、通常起動でも dev-shm を無効化する。
       extraArgs: stableMode
         ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-        : ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        : ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
     });
 
   let browser = await launchLaplaceBrowser();
