@@ -202,9 +202,9 @@ export async function POST(request: Request) {
         key: string;
         run: () => Promise<CollectorStepResult>;
       }> = [
-        { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
-        { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
         { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
+        { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
+        { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
         {
           key: "fusion-solar",
           run: () =>

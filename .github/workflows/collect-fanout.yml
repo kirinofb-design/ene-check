@@ -19,7 +19,7 @@ on:
 # Playwright をまたぐ処理を2フェーズに分割し、フェーズ間で待機して別実行へ寄せる。
 jobs:
   collect_phase_a:
-    name: Collect (phase A — sma / eco-megane / laplace)
+    name: Collect (phase A — laplace / eco-megane / sma)
     runs-on: ubuntu-latest
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
@@ -80,8 +80,7 @@ jobs:
             const userId = userIdRaw.includes("@") ? "" : userIdRaw;
             const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            // SMA は /tmp 枯渇に敏感なので laplace より先に実行する
-            const systems = ["sma", "eco-megane", "laplace"];
+            const systems = ["laplace", "eco-megane", "sma"];
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
               return (
@@ -132,7 +131,7 @@ jobs:
                   if (!softFailure(system, msg)) hasFailure = true;
                   console.error(JSON.stringify({ phase: "A", system, ok: false, message: last?.message ?? "collector failed" }));
                 }
-                await sleep(20000);
+                await sleep(12000);
               }
               if (hasFailure) process.exit(1);
             })().catch((e) => {
@@ -259,7 +258,7 @@ jobs:
                   if (!softFailure(system, msg)) hasFailure = true;
                   console.error(JSON.stringify({ phase: "B", system, ok: false, message: last?.message ?? "collector failed" }));
                 }
-                await sleep(20000);
+                await sleep(12000);
               }
               if (hasFailure) process.exit(1);
             })().catch((e) => {
