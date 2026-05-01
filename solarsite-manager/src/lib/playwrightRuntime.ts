@@ -58,14 +58,10 @@ async function cleanupPlaywrightTmpProfiles(): Promise<void> {
   if (entries.length === 0) return;
 
   const now = Date.now();
-  // 連続実行時に /tmp が短時間で圧迫されるため、古い profile は積極的に掃除する。
-  const staleAgeMs = 2 * 60 * 1000;
+  const staleAgeMs = 30 * 60 * 1000;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const cleanupTarget =
-      entry.name.startsWith("playwright_chromiumdev_profile-") ||
-      entry.name.startsWith("playwright-artifacts-");
-    if (!cleanupTarget) continue;
+    if (!entry.name.startsWith("playwright_chromiumdev_profile-")) continue;
     const fullPath = join(dir, entry.name);
     const st = await stat(fullPath).catch(() => null);
     if (!st) continue;
