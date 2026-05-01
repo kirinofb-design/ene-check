@@ -37,8 +37,6 @@ function looksLikeTransientCollectorError(message: string): boolean {
   const m = message.toLowerCase();
   return (
     m.includes("err_insufficient_resources") ||
-    m.includes("less than 64mb free space in temporary directory") ||
-    m.includes("discardable_shared_memory_manager.cc") ||
     m.includes("detached frame") ||
     m.includes("execution context was destroyed") ||
     m.includes("target page, context or browser has been closed") ||
@@ -64,10 +62,6 @@ async function resolveInternalUserId(): Promise<string | null> {
     orderBy: { createdAt: "asc" },
   });
   return cred?.userId ?? null;
-}
-
-function isPlaywrightHeavySystem(system: CollectSystemId): boolean {
-  return system === "laplace" || system === "solar-monitor-sf" || system === "solar-monitor-se";
 }
 
 export async function POST(request: Request) {
@@ -163,7 +157,7 @@ export async function POST(request: Request) {
       if (result.ok) break;
       if (!looksLikeTransientCollectorError(result.message)) break;
       if (attempt >= maxAttempts) break;
-      const waitMs = isPlaywrightHeavySystem(system) ? (attempt === 1 ? 4000 : 8000) : attempt === 1 ? 1500 : 3500;
+      const waitMs = attempt === 1 ? 1500 : 3500;
       await new Promise((r) => setTimeout(r, waitMs));
     }
     return NextResponse.json(result);

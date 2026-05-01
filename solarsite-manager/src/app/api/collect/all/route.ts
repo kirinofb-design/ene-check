@@ -67,8 +67,6 @@ function looksLikeTransientCollectorError(message: string): boolean {
   const m = message.toLowerCase();
   return (
     m.includes("err_insufficient_resources") ||
-    m.includes("less than 64mb free space in temporary directory") ||
-    m.includes("discardable_shared_memory_manager.cc") ||
     m.includes("detached frame") ||
     m.includes("execution context was destroyed") ||
     m.includes("target page, context or browser has been closed") ||

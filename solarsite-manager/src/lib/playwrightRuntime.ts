@@ -1,5 +1,5 @@
 import type { Browser } from "playwright-core";
-import { access, mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
+import { access, mkdir, open, stat, unlink } from "node:fs/promises";
 import { constants as FsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,24 +51,6 @@ async function runSerializedOnVercel<T>(task: () => Promise<T>): Promise<T> {
 
 const CHROMIUM_BIN = join(tmpdir(), "chromium");
 const CHROMIUM_BOOTSTRAP_LOCK = join(tmpdir(), "ene-sparticuz-chromium.bootstrap.lock");
-
-async function cleanupPlaywrightTmpProfiles(): Promise<void> {
-  const dir = tmpdir();
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-  if (entries.length === 0) return;
-
-  const now = Date.now();
-  const staleAgeMs = 30 * 60 * 1000;
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (!entry.name.startsWith("playwright_chromiumdev_profile-")) continue;
-    const fullPath = join(dir, entry.name);
-    const st = await stat(fullPath).catch(() => null);
-    if (!st) continue;
-    if (now - st.mtimeMs < staleAgeMs) continue;
-    await rm(fullPath, { recursive: true, force: true }).catch(() => {});
-  }
-}
 
 async function sleep(ms: number) {
   await new Promise((r) => setTimeout(r, ms));
@@ -170,8 +152,6 @@ export async function launchChromiumForRuntime(opts: LaunchOpts = {}): Promise<B
   if (isVercelRuntime()) {
     return await runSerializedOnVercel(async () => {
       return await withVercelChromiumBootstrapLock(async () => {
-        // /tmp 容量逼迫で Chromium が即終了する事故を減らす。
-        await cleanupPlaywrightTmpProfiles();
         const executablePath = await resolveSparticuzExecutablePath();
         const chromiumMod = await import("@sparticuz/chromium");
         const chromium = chromiumMod.default ?? chromiumMod;
