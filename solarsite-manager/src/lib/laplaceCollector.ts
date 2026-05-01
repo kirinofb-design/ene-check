@@ -866,12 +866,27 @@ export async function runLaplaceCollector(
         return await create();
       }
     };
+    const createPage = async (targetContext: Awaited<ReturnType<typeof createContext>>) => {
+      try {
+        return await targetContext.newPage();
+      } catch {
+        await targetContext.close().catch(() => {});
+        await browser.close().catch(() => {});
+        browser = await launchLaplaceBrowser(true);
+        const newContext = await createContext();
+        await newContext.addInitScript(() => {
+          Object.defineProperty(navigator, "webdriver", { get: () => false });
+        });
+        context = newContext;
+        return await newContext.newPage();
+      }
+    };
 
     let context = await createContext();
     await context.addInitScript(() => {
       Object.defineProperty(navigator, "webdriver", { get: () => false });
     });
-    let page = await context.newPage();
+    let page = await createPage(context);
     page.setDefaultTimeout(60_000);
 
     const loginAndOpen = async () => {
@@ -892,7 +907,7 @@ export async function runLaplaceCollector(
       await context.addInitScript(() => {
         Object.defineProperty(navigator, "webdriver", { get: () => false });
       });
-      page = await context.newPage();
+      page = await createPage(context);
       page.setDefaultTimeout(60_000);
       await loginAndOpen();
     }
@@ -903,7 +918,7 @@ export async function runLaplaceCollector(
       await newContext.addInitScript(() => {
         Object.defineProperty(navigator, "webdriver", { get: () => false });
       });
-      const newPage = await newContext.newPage();
+      const newPage = await createPage(newContext);
       newPage.setDefaultTimeout(60_000);
       await loginLaplace(newPage, loginId, password);
       const opened = await openGrandArchFromServiceList(newPage);
