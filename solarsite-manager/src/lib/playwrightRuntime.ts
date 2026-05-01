@@ -1,5 +1,5 @@
 import type { Browser } from "playwright-core";
-import { access, mkdir, open, readdir, rm, stat, statfs, unlink } from "node:fs/promises";
+import { access, mkdir, open, readdir, rm, stat, unlink } from "node:fs/promises";
 import { constants as FsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,17 +72,6 @@ const VERCEL_TMP_SCRATCH_DIR_PREFIXES = [
 
 const VERCEL_TMP_SCRATCH_DIR_NAMES = new Set(["sma-download", "sma-trace"]);
 
-const MIN_TMP_FREE_BYTES_BEFORE_LAUNCH = 180 * 1024 * 1024;
-
-async function getTmpFreeBytes(): Promise<number | null> {
-  try {
-    const fsStat = await statfs(tmpdir());
-    return Number(fsStat.bavail) * Number(fsStat.bsize);
-  } catch {
-    return null;
-  }
-}
-
 async function cleanupVercelCollectTmpScratch(): Promise<void> {
   const dir = tmpdir();
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -109,30 +98,6 @@ async function cleanupVercelCollectTmpScratch(): Promise<void> {
   }
 }
 
-async function emergencyPurgeTmpForChromium(): Promise<void> {
-  const dir = tmpdir();
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-  if (entries.length === 0) return;
-
-  for (const entry of entries) {
-    // sparticuz 本体と lock は維持する
-    if (entry.name === "chromium" || entry.name === "ene-sparticuz-chromium.bootstrap.lock") continue;
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      await rm(fullPath, { recursive: true, force: true }).catch(() => {});
-    } else {
-      await unlink(fullPath).catch(() => {});
-    }
-  }
-}
-
-async function ensureTmpHeadroomForChromiumLaunch(): Promise<void> {
-  await cleanupVercelCollectTmpScratch();
-  const freeBefore = await getTmpFreeBytes();
-  if (freeBefore !== null && freeBefore >= MIN_TMP_FREE_BYTES_BEFORE_LAUNCH) return;
-  await emergencyPurgeTmpForChromium();
-}
-
 /** ブラウザ終了直後に呼び、次の順次収集リクエストへ `/tmp` を残さない（同一 Warm インスタンス対策） */
 export async function sweepVercelCollectTmpAfterBrowserClose(): Promise<void> {
   if (!isVercelRuntime()) return;
@@ -140,10 +105,6 @@ export async function sweepVercelCollectTmpAfterBrowserClose(): Promise<void> {
   await cleanupVercelCollectTmpScratch();
   await sleep(250);
   await cleanupVercelCollectTmpScratch();
-  const freeAfter = await getTmpFreeBytes();
-  if (freeAfter !== null && freeAfter < MIN_TMP_FREE_BYTES_BEFORE_LAUNCH) {
-    await emergencyPurgeTmpForChromium();
-  }
 }
 
 async function sleep(ms: number) {
@@ -247,7 +208,7 @@ export async function launchChromiumForRuntime(opts: LaunchOpts = {}): Promise<B
     return await runSerializedOnVercel(async () => {
       return await withVercelChromiumBootstrapLock(async () => {
         // /tmp 容量逼迫で Chromium が即終了する事故を減らす。
-        await ensureTmpHeadroomForChromiumLaunch();
+        await cleanupVercelCollectTmpScratch();
         const executablePath = await resolveSparticuzExecutablePath();
         const chromiumMod = await import("@sparticuz/chromium");
         const chromium = chromiumMod.default ?? chromiumMod;
