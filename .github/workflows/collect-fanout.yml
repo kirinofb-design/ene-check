@@ -99,7 +99,7 @@ jobs:
 
   collect_eco:
     runs-on: ubuntu-latest
-    needs: collect_sma
+    needs: [resolve_dates, collect_sma]
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
@@ -150,7 +150,7 @@ jobs:
 
   collect_laplace:
     runs-on: ubuntu-latest
-    needs: collect_eco
+    needs: [resolve_dates, collect_eco]
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
@@ -201,7 +201,7 @@ jobs:
 
   collect_fusion:
     runs-on: ubuntu-latest
-    needs: collect_laplace
+    needs: [resolve_dates, collect_laplace]
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
@@ -252,7 +252,7 @@ jobs:
 
   collect_solar_sf:
     runs-on: ubuntu-latest
-    needs: collect_fusion
+    needs: [resolve_dates, collect_fusion]
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
@@ -303,7 +303,7 @@ jobs:
 
   collect_solar_se:
     runs-on: ubuntu-latest
-    needs: collect_solar_sf
+    needs: [resolve_dates, collect_solar_sf]
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
