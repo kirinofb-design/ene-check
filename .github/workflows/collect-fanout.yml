@@ -161,69 +161,9 @@ jobs:
             })().catch((e) => { console.error(String(e)); process.exit(1); });
           '
 
-  collect_laplace:
-    runs-on: ubuntu-latest
-    needs: [resolve_dates, collect_eco]
-    env:
-      BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
-      CRON_SECRET: ${{ secrets.CRON_SECRET }}
-      COLLECT_USER_ID: ${{ secrets.CRON_COLLECT_USER_ID }}
-      COLLECT_USER_EMAIL: ${{ secrets.CRON_COLLECT_USER_EMAIL }}
-      SYSTEM_ID: laplace
-      START_DATE: ${{ needs.resolve_dates.outputs.startDate }}
-      END_DATE: ${{ needs.resolve_dates.outputs.endDate }}
-    steps:
-      - name: Run collector with retries
-        shell: bash
-        run: |
-          node -e '
-            const base = (process.env.BASE_URL || "").replace(/\/+$/, "");
-            const secret = process.env.CRON_SECRET || "";
-            const system = process.env.SYSTEM_ID || "";
-            const startDate = process.env.START_DATE || "";
-            const endDate = process.env.END_DATE || "";
-            const userIdRaw = (process.env.COLLECT_USER_ID || "").trim();
-            const userEmailRaw = (process.env.COLLECT_USER_EMAIL || "").trim();
-            const userId = userIdRaw.includes("@") ? "" : userIdRaw;
-            const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
-            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            const transient = (m) => {
-              const s = String(m || "").toLowerCase();
-              return (
-                s.includes("err_insufficient_resources") ||
-                s.includes("less than 64mb free space in temporary directory") ||
-                s.includes("file_error_no_space") ||
-                s.includes("target page, context or browser has been closed") ||
-                s.includes("execution context was destroyed") ||
-                s.includes("browsercontext.newpage") ||
-                s.includes("ログイン後もログイン画面のまま") ||
-                s.includes("ログイン画面のまま")
-              );
-            };
-            (async () => {
-              const url = `${base}/api/collect/system`;
-              const payload = { system, startDate, endDate };
-              if (userId) payload.userId = userId;
-              else if (userEmail) payload.userEmail = userEmail;
-              let last = null;
-              for (let attempt = 1; attempt <= 6; attempt++) {
-                const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${secret}` }, body: JSON.stringify(payload) });
-                const json = await res.json().catch(() => ({}));
-                const ok = Boolean(json.ok);
-                console.log(JSON.stringify({ system, attempt, status: res.status, ok, message: json.message ?? "" }));
-                if (ok) return;
-                last = json;
-                if (!transient(json.message) || attempt === 6) break;
-                await sleep(attempt < 3 ? 4000 : 8000);
-              }
-              console.error(JSON.stringify({ system, ok: false, message: last?.message ?? "collector failed" }));
-              process.exit(1);
-            })().catch((e) => { console.error(String(e)); process.exit(1); });
-          '
-
   collect_fusion:
     runs-on: ubuntu-latest
-    needs: [resolve_dates, collect_laplace]
+    needs: [resolve_dates, collect_eco]
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
