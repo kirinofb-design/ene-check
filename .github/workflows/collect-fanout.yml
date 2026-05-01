@@ -19,7 +19,7 @@ on:
 # Playwright をまたぐ処理を2フェーズに分割し、フェーズ間で待機して別実行へ寄せる。
 jobs:
   collect_phase_a:
-    name: Collect (phase A — sma / eco-megane / laplace)
+    name: Collect (phase A — sma / eco-megane)
     runs-on: ubuntu-latest
     env:
       BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
@@ -80,8 +80,8 @@ jobs:
             const userId = userIdRaw.includes("@") ? "" : userIdRaw;
             const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            // SMA は /tmp 枯渇に敏感なので laplace より先に実行する
-            const systems = ["sma", "eco-megane", "laplace"];
+            // /tmp 枯渇に敏感な系を先に処理し、laplace は別フェーズへ分離する
+            const systems = ["sma", "eco-megane"];
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
               return (
@@ -262,6 +262,117 @@ jobs:
                 await sleep(20000);
               }
               if (hasFailure) process.exit(1);
+            })().catch((e) => {
+              console.error(String(e));
+              process.exit(1);
+            });
+          '
+
+  collect_phase_c:
+    name: Collect (phase C — laplace)
+    needs: collect_phase_b
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: ${{ secrets.COLLECT_BASE_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      COLLECT_USER_ID: ${{ secrets.CRON_COLLECT_USER_ID }}
+      COLLECT_USER_EMAIL: ${{ secrets.CRON_COLLECT_USER_EMAIL }}
+      INPUT_START_DATE: ${{ github.event.inputs.startDate }}
+      INPUT_END_DATE: ${{ github.event.inputs.endDate }}
+    steps:
+      - name: Validate required secrets
+        run: |
+          if [ -z "${BASE_URL}" ]; then
+            echo "COLLECT_BASE_URL secret is required"
+            exit 1
+          fi
+          if [ -z "${CRON_SECRET}" ]; then
+            echo "CRON_SECRET secret is required"
+            exit 1
+          fi
+
+      - name: Resolve date range (JST)
+        id: dates
+        shell: bash
+        run: |
+          node -e '
+            const inStart = (process.env.INPUT_START_DATE || "").trim();
+            const inEnd = (process.env.INPUT_END_DATE || "").trim();
+            const ymd = (d) => d.toISOString().slice(0, 10);
+            const out = process.env.GITHUB_OUTPUT;
+            if (inStart && inEnd) {
+              require("fs").appendFileSync(out, `startDate=${inStart}\nendDate=${inEnd}\n`);
+              process.exit(0);
+            }
+            const now = Date.now();
+            const jstOffset = 9 * 60 * 60 * 1000;
+            const jst = new Date(now + jstOffset);
+            const y = jst.getUTCFullYear();
+            const m = jst.getUTCMonth();
+            const d = jst.getUTCDate();
+            const yester = new Date(Date.UTC(y, m, d - 1, 0, 0, 0, 0));
+            const start = new Date(Date.UTC(yester.getUTCFullYear(), yester.getUTCMonth(), 1, 0, 0, 0, 0));
+            require("fs").appendFileSync(out, `startDate=${ymd(start)}\nendDate=${ymd(yester)}\n`);
+          '
+
+      - name: Cool down before phase C (laplace isolation)
+        run: sleep 180
+
+      - name: Run laplace with retries (phase C)
+        shell: bash
+        env:
+          START_DATE: ${{ steps.dates.outputs.startDate }}
+          END_DATE: ${{ steps.dates.outputs.endDate }}
+        run: |
+          node -e '
+            const base = (process.env.BASE_URL || "").replace(/\/+$/, "");
+            const secret = process.env.CRON_SECRET || "";
+            const startDate = process.env.START_DATE || "";
+            const endDate = process.env.END_DATE || "";
+            const userIdRaw = (process.env.COLLECT_USER_ID || "").trim();
+            const userEmailRaw = (process.env.COLLECT_USER_EMAIL || "").trim();
+            const userId = userIdRaw.includes("@") ? "" : userIdRaw;
+            const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            const transient = (m) => {
+              const s = String(m || "").toLowerCase();
+              return (
+                s.includes("err_insufficient_resources") ||
+                s.includes("less than 64mb free space in temporary directory") ||
+                s.includes("discardable_shared_memory_manager.cc") ||
+                s.includes("file_error_no_space") ||
+                s.includes("target page, context or browser has been closed") ||
+                s.includes("execution context was destroyed") ||
+                s.includes("detached frame") ||
+                s.includes("browsercontext.newpage") ||
+                s.includes("ログイン後もログイン画面のまま")
+              );
+            };
+            (async () => {
+              const url = `${base}/api/collect/system`;
+              const payload = { system: "laplace", startDate, endDate };
+              if (userId) payload.userId = userId;
+              else if (userEmail) payload.userEmail = userEmail;
+              let last = null;
+              for (let attempt = 1; attempt <= 7; attempt++) {
+                const res = await fetch(url, {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${secret}`,
+                  },
+                  body: JSON.stringify(payload),
+                });
+                const json = await res.json().catch(() => ({}));
+                const ok = Boolean(json.ok);
+                console.log(JSON.stringify({ phase: "C", system: "laplace", attempt, status: res.status, ok, message: json.message ?? "" }));
+                if (ok) return;
+                last = json;
+                if (!transient(json.message) || attempt === 7) break;
+                await sleep(attempt < 3 ? 6000 : 12000);
+              }
+              console.error(JSON.stringify({ phase: "C", system: "laplace", ok: false, message: last?.message ?? "collector failed" }));
+              process.exit(1);
             })().catch((e) => {
               console.error(String(e));
               process.exit(1);
