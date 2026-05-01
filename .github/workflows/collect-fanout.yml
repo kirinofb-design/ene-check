@@ -11,9 +11,6 @@ on:
         description: "終了日 (YYYY-MM-DD)。未指定時はJST昨日"
         required: false
         type: string
-  schedule:
-    # JST 05:35 に実行（UTC 20:35）
-    - cron: "35 20 * * *"
 
 jobs:
   collect:
