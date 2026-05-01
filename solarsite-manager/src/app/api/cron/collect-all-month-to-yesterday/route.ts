@@ -22,48 +22,6 @@ type CollectorStepResult = {
   errorCount: number;
 };
 
-function looksLikeTransientCollectorError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes("err_insufficient_resources") ||
-    m.includes("less than 64mb free space in temporary directory") ||
-    m.includes("discardable_shared_memory_manager.cc") ||
-    m.includes("detached frame") ||
-    m.includes("execution context was destroyed") ||
-    m.includes("target page, context or browser has been closed") ||
-    m.includes("browsercontext.newpage") ||
-    m.includes("ラプラス: サービス一覧で「l・eye総合監視」の開くボタンが見つかりません。")
-  );
-}
-
-async function runCollectorWithRetry(
-  key: string,
-  runner: () => Promise<CollectorStepResult>
-): Promise<CollectorStepResult> {
-  const maxAttempts = 3;
-  let last: CollectorStepResult | null = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const result = await runner();
-    if (result.ok) return result;
-    last = result;
-    if (!looksLikeTransientCollectorError(result.message)) return result;
-    if (attempt >= maxAttempts) break;
-    const waitMs =
-      key === "laplace" || key === "solar-monitor-sf" || key === "solar-monitor-se"
-        ? attempt === 1
-          ? 4000
-          : 8000
-        : attempt === 1
-          ? 1500
-          : 3500;
-    await new Promise((r) => setTimeout(r, waitMs));
-  }
-  return {
-    ...(last ?? { key, ok: false, message: "collector failed", recordCount: 0, errorCount: 0 }),
-    message: `${last?.message ?? "collector failed"}（再試行後も失敗）`,
-  };
-}
-
 function isAuthorizedByCronSecret(request: Request): boolean {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) return false;
@@ -226,44 +184,26 @@ export async function GET(request: Request) {
     }
 
     await prewarmVercelChromiumExecutable();
-    const runners: Array<{ key: string; run: () => Promise<CollectorStepResult> }> = [
-      { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
-      { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
-      { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
-      {
-        key: "solar-monitor-sf",
-        run: () =>
-          runSolarMonitorStep(
-            userId,
-            startDate,
-            endDate,
-            "solar-monitor-sf",
-            "Solar Monitor（池新田・本社）データ取得が完了しました。"
-          ),
-      },
-      {
-        key: "solar-monitor-se",
-        run: () =>
-          runSolarMonitorStep(
-            userId,
-            startDate,
-            endDate,
-            "solar-monitor-se",
-            "Solar Monitor（須山）データ取得が完了しました。"
-          ),
-      },
-      { key: "fusion-solar", run: () => runNamedCollector("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)) },
-    ];
-    steps = [];
-    for (const runner of runners) {
-      if (isCollectorCancelRequested(userId, "all")) {
-        cancelled = true;
-        break;
-      }
-      const step = await runCollectorWithRetry(runner.key, runner.run);
-      steps.push(step);
-      await new Promise((r) => setTimeout(r, 1000));
-    }
+    steps = await Promise.all([
+      runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)),
+      runNamedCollector("fusion-solar", () => runFusionSolarCollector(userId, startDate, endDate)),
+      runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)),
+      runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)),
+      runSolarMonitorStep(
+        userId,
+        startDate,
+        endDate,
+        "solar-monitor-sf",
+        "Solar Monitor（池新田・本社）データ取得が完了しました。"
+      ),
+      runSolarMonitorStep(
+        userId,
+        startDate,
+        endDate,
+        "solar-monitor-se",
+        "Solar Monitor（須山）データ取得が完了しました。"
+      ),
+    ]);
 
     cancelled = isCollectorCancelRequested(userId, "all");
     if (!cancelled) {
