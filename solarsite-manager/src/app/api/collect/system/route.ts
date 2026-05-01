@@ -43,7 +43,8 @@ function looksLikeTransientCollectorError(message: string): boolean {
     m.includes("execution context was destroyed") ||
     m.includes("target page, context or browser has been closed") ||
     m.includes("browsercontext.newpage") ||
-    m.includes("ログイン後もログイン画面のまま")
+    m.includes("ログイン後もログイン画面のまま") ||
+    m.includes("ログイン画面のまま")
   );
 }
 
