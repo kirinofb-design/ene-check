@@ -5,7 +5,7 @@ import iconv from "iconv-lite";
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/encryption";
-import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
+import { launchChromiumForRuntime, sweepVercelCollectTmpAfterBrowserClose } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import { ensureSiteMasterSeededIfEmpty } from "@/lib/siteMaster";
 import type { Page, Response } from "playwright-core";
@@ -318,6 +318,7 @@ export async function runEcoMeganeCollector(
     };
   } finally {
     await browser.close().catch(() => {});
+    await sweepVercelCollectTmpAfterBrowserClose();
   }
 }
 

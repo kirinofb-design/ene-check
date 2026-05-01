@@ -59,25 +59,49 @@ const VERCEL_CHROMIUM_STABILITY_ARGS = [
   "--disable-dev-shm-usage",
 ] as const;
 
-/** Vercel の /tmp は容量が小さく、Warm 再利用で Playwright プロファイルが積み上がり FILE_ERROR_NO_SPACE になりやすい */
-const PLAYWRIGHT_TMP_DIR_PREFIXES = [
+/** Code Cache が /tmp を食い潰すのを抑える（容量枯渇時に profile/Code Cache でコケやすい） */
+const VERCEL_CHROMIUM_LOW_DISK_ARGS = ["--disk-cache-size=1", "--media-cache-size=1"] as const;
+
+/** 収集処理が /tmp に残しやすいディレクトリ（Warm 再利用で積み上がり Fusion 最終段で枯渇しやすい） */
+const VERCEL_TMP_SCRATCH_DIR_PREFIXES = [
   "playwright_chromiumdev_profile-",
   "playwright-artifacts-",
   "playwright-profile-",
+  "solar-monitor-",
 ] as const;
 
-async function cleanupPlaywrightTmpProfiles(): Promise<void> {
+const VERCEL_TMP_SCRATCH_DIR_NAMES = new Set(["sma-download", "sma-trace"]);
+
+async function cleanupVercelCollectTmpScratch(): Promise<void> {
   const dir = tmpdir();
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
   if (entries.length === 0) return;
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const hit = PLAYWRIGHT_TMP_DIR_PREFIXES.some((p) => entry.name.startsWith(p));
-    if (!hit) continue;
     const fullPath = join(dir, entry.name);
-    await rm(fullPath, { recursive: true, force: true }).catch(() => {});
+    // sparticuz の実行ファイル・ロックは消さない
+    if (entry.name === "chromium" || entry.name === "ene-sparticuz-chromium.bootstrap.lock") continue;
+
+    if (entry.isDirectory()) {
+      const byPrefix = VERCEL_TMP_SCRATCH_DIR_PREFIXES.some((p) => entry.name.startsWith(p));
+      const byExact = VERCEL_TMP_SCRATCH_DIR_NAMES.has(entry.name);
+      if (!byPrefix && !byExact) continue;
+      await rm(fullPath, { recursive: true, force: true }).catch(() => {});
+    }
+    if (entry.isFile()) {
+      const n = entry.name;
+      const zap =
+        (n.startsWith("laplace-") && n.endsWith(".zip")) ||
+        (n.startsWith("eco-megane-") && n.endsWith(".csv"));
+      if (zap) await unlink(fullPath).catch(() => {});
+    }
   }
+}
+
+/** ブラウザ終了直後に呼び、次の順次収集リクエストへ `/tmp` を残さない（同一 Warm インスタンス対策） */
+export async function sweepVercelCollectTmpAfterBrowserClose(): Promise<void> {
+  if (!isVercelRuntime()) return;
+  await cleanupVercelCollectTmpScratch();
 }
 
 async function sleep(ms: number) {
@@ -181,13 +205,16 @@ export async function launchChromiumForRuntime(opts: LaunchOpts = {}): Promise<B
     return await runSerializedOnVercel(async () => {
       return await withVercelChromiumBootstrapLock(async () => {
         // /tmp 容量逼迫で Chromium が即終了する事故を減らす。
-        await cleanupPlaywrightTmpProfiles();
+        await cleanupVercelCollectTmpScratch();
         const executablePath = await resolveSparticuzExecutablePath();
         const chromiumMod = await import("@sparticuz/chromium");
         const chromium = chromiumMod.default ?? chromiumMod;
         const args = mergeChromiumArgs(
           chromium.args,
-          mergeChromiumArgs([...VERCEL_CHROMIUM_STABILITY_ARGS], opts.extraArgs)
+          mergeChromiumArgs(
+            [...VERCEL_CHROMIUM_STABILITY_ARGS],
+            mergeChromiumArgs([...VERCEL_CHROMIUM_LOW_DISK_ARGS], opts.extraArgs)
+          )
         );
         return await launchWithRetries(() =>
           pw.chromium.launch({

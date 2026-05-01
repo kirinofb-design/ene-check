@@ -77,7 +77,8 @@ jobs:
             const userId = userIdRaw.includes("@") ? "" : userIdRaw;
             const userEmail = userEmailRaw || (userIdRaw.includes("@") ? userIdRaw : "");
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            const systems = ["eco-megane", "sma", "laplace", "solar-monitor-sf", "solar-monitor-se", "fusion-solar"];
+            // fusion-solar は /tmp を多く使うため、laplace・SolarMonitor より先に実行する
+            const systems = ["eco-megane", "sma", "fusion-solar", "laplace", "solar-monitor-sf", "solar-monitor-se"];
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
               return (

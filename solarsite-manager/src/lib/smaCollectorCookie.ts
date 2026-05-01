@@ -1,7 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
-import { isVercelRuntime, prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
+import {
+  isVercelRuntime,
+  prewarmVercelChromiumExecutable,
+  sweepVercelCollectTmpAfterBrowserClose,
+} from "@/lib/playwrightRuntime";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1882,6 +1886,7 @@ export async function runSmaCollectorCookie(
   } finally {
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     await browser.close().catch(() => {});
+    await sweepVercelCollectTmpAfterBrowserClose();
   }
 }
 

@@ -189,11 +189,13 @@ export async function POST(request: Request) {
       const requestDays = diffDaysInclusive(startDate, endDate);
       const fusionBudgetMs =
         process.env.NODE_ENV === "production"
-          ? requestDays > 7
-            ? 90_000
-            : requestDays > 3
-              ? 120_000
-              : 150_000
+          ? requestDays > 20
+            ? 240_000
+            : requestDays > 7
+              ? 180_000
+              : requestDays > 3
+                ? 150_000
+                : 180_000
           : undefined;
 
       const runners: Array<{
@@ -202,6 +204,13 @@ export async function POST(request: Request) {
       }> = [
         { key: "eco-megane", run: () => runNamedCollector("eco-megane", () => runEcoMeganeCollector(userId, startDate, endDate)) },
         { key: "sma", run: () => runNamedCollector("sma", () => runSmaCollector(userId, startDate, endDate)) },
+        {
+          key: "fusion-solar",
+          run: () =>
+            runNamedCollector("fusion-solar", () =>
+              runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs: fusionBudgetMs })
+            ),
+        },
         { key: "laplace", run: () => runNamedCollector("laplace", () => runLaplaceCollector(userId, startDate, endDate)) },
         {
           key: "solar-monitor-sf",
@@ -210,13 +219,6 @@ export async function POST(request: Request) {
         {
           key: "solar-monitor-se",
           run: () => runSolarMonitorStep("solar-monitor-se", "Solar Monitor（須山）データ取得が完了しました。"),
-        },
-        {
-          key: "fusion-solar",
-          run: () =>
-            runNamedCollector("fusion-solar", () =>
-              runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs: fusionBudgetMs })
-            ),
         },
       ];
       initializeAllCollectProgress(userId, runners.length);
