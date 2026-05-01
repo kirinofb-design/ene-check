@@ -44,6 +44,19 @@ function looksLikeTransientCollectorError(message: string): boolean {
   );
 }
 
+function getCollectorRetryPolicy(system: CollectSystemId): { maxAttempts: number; waitMs: (attempt: number) => number } {
+  if (system === "laplace") {
+    return {
+      maxAttempts: 5,
+      waitMs: (attempt) => (attempt < 3 ? 4000 : 8000),
+    };
+  }
+  return {
+    maxAttempts: 3,
+    waitMs: (attempt) => (attempt === 1 ? 1500 : 3500),
+  };
+}
+
 async function resolveInternalUserId(): Promise<string | null> {
   const byId = process.env.CRON_COLLECT_USER_ID?.trim();
   if (byId) return byId;
@@ -150,15 +163,14 @@ export async function POST(request: Request) {
   };
 
   try {
-    const maxAttempts = 3;
+    const { maxAttempts, waitMs } = getCollectorRetryPolicy(system);
     let result: CollectResult = { ok: false, message: "collector failed", recordCount: 0, errorCount: 0 };
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       result = await run();
       if (result.ok) break;
       if (!looksLikeTransientCollectorError(result.message)) break;
       if (attempt >= maxAttempts) break;
-      const waitMs = attempt === 1 ? 1500 : 3500;
-      await new Promise((r) => setTimeout(r, waitMs));
+      await new Promise((r) => setTimeout(r, waitMs(attempt)));
     }
     return NextResponse.json(result);
   } catch (e) {
