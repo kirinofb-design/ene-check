@@ -37,6 +37,8 @@ function looksLikeTransientCollectorError(message: string): boolean {
   const m = message.toLowerCase();
   return (
     m.includes("err_insufficient_resources") ||
+    m.includes("less than 64mb free space in temporary directory") ||
+    m.includes("file_error_no_space") ||
     m.includes("detached frame") ||
     m.includes("execution context was destroyed") ||
     m.includes("target page, context or browser has been closed") ||
@@ -45,7 +47,7 @@ function looksLikeTransientCollectorError(message: string): boolean {
 }
 
 function getCollectorRetryPolicy(system: CollectSystemId): { maxAttempts: number; waitMs: (attempt: number) => number } {
-  if (system === "laplace") {
+  if (system === "laplace" || system === "solar-monitor-sf" || system === "solar-monitor-se") {
     return {
       maxAttempts: 5,
       waitMs: (attempt) => (attempt < 3 ? 4000 : 8000),

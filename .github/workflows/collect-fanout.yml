@@ -130,7 +130,14 @@ jobs:
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
-              return s.includes("err_insufficient_resources") || s.includes("target page, context or browser has been closed");
+              return (
+                s.includes("err_insufficient_resources") ||
+                s.includes("less than 64mb free space in temporary directory") ||
+                s.includes("file_error_no_space") ||
+                s.includes("target page, context or browser has been closed") ||
+                s.includes("execution context was destroyed") ||
+                s.includes("browsercontext.newpage")
+              );
             };
             (async () => {
               const url = `${base}/api/collect/system`;
@@ -138,15 +145,15 @@ jobs:
               if (userId) payload.userId = userId;
               else if (userEmail) payload.userEmail = userEmail;
               let last = null;
-              for (let attempt = 1; attempt <= 3; attempt++) {
+              for (let attempt = 1; attempt <= 6; attempt++) {
                 const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${secret}` }, body: JSON.stringify(payload) });
                 const json = await res.json().catch(() => ({}));
                 const ok = Boolean(json.ok);
                 console.log(JSON.stringify({ system, attempt, status: res.status, ok, message: json.message ?? "" }));
                 if (ok) return;
                 last = json;
-                if (!transient(json.message) || attempt === 3) break;
-                await sleep(attempt === 1 ? 1500 : 3500);
+                if (!transient(json.message) || attempt === 6) break;
+                await sleep(attempt < 3 ? 4000 : 8000);
               }
               console.error(JSON.stringify({ system, ok: false, message: last?.message ?? "collector failed" }));
               process.exit(1);
@@ -181,7 +188,14 @@ jobs:
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const transient = (m) => {
               const s = String(m || "").toLowerCase();
-              return s.includes("err_insufficient_resources") || s.includes("target page, context or browser has been closed");
+              return (
+                s.includes("err_insufficient_resources") ||
+                s.includes("less than 64mb free space in temporary directory") ||
+                s.includes("file_error_no_space") ||
+                s.includes("target page, context or browser has been closed") ||
+                s.includes("execution context was destroyed") ||
+                s.includes("browsercontext.newpage")
+              );
             };
             (async () => {
               const url = `${base}/api/collect/system`;
@@ -189,15 +203,15 @@ jobs:
               if (userId) payload.userId = userId;
               else if (userEmail) payload.userEmail = userEmail;
               let last = null;
-              for (let attempt = 1; attempt <= 3; attempt++) {
+              for (let attempt = 1; attempt <= 6; attempt++) {
                 const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${secret}` }, body: JSON.stringify(payload) });
                 const json = await res.json().catch(() => ({}));
                 const ok = Boolean(json.ok);
                 console.log(JSON.stringify({ system, attempt, status: res.status, ok, message: json.message ?? "" }));
                 if (ok) return;
                 last = json;
-                if (!transient(json.message) || attempt === 3) break;
-                await sleep(attempt === 1 ? 1500 : 3500);
+                if (!transient(json.message) || attempt === 6) break;
+                await sleep(attempt < 3 ? 4000 : 8000);
               }
               console.error(JSON.stringify({ system, ok: false, message: last?.message ?? "collector failed" }));
               process.exit(1);
@@ -267,6 +281,8 @@ jobs:
       START_DATE: ${{ needs.resolve_dates.outputs.startDate }}
       END_DATE: ${{ needs.resolve_dates.outputs.endDate }}
     steps:
+      - name: Cool down before solar monitor
+        run: sleep 90
       - name: Run collector with retries
         shell: bash
         run: |
