@@ -42,8 +42,7 @@ function looksLikeTransientCollectorError(message: string): boolean {
     m.includes("detached frame") ||
     m.includes("execution context was destroyed") ||
     m.includes("target page, context or browser has been closed") ||
-    m.includes("browsercontext.newpage") ||
-    m.includes("ログイン後もログイン画面のまま")
+    m.includes("browsercontext.newpage")
   );
 }
 
@@ -126,7 +125,7 @@ export async function POST(request: Request) {
       case "fusion-solar": {
         const requestDays = diffDaysInclusive(startDate, endDate);
         const wallBudgetMs =
-          requestDays > 20 ? 240_000 : requestDays > 7 ? 180_000 : requestDays > 3 ? 150_000 : 180_000;
+          requestDays > 7 ? 90_000 : requestDays > 3 ? 120_000 : 150_000;
         return runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs });
       }
       case "sma":
