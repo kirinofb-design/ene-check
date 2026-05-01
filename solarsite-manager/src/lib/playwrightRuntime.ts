@@ -52,24 +52,23 @@ async function runSerializedOnVercel<T>(task: () => Promise<T>): Promise<T> {
 const CHROMIUM_BIN = join(tmpdir(), "chromium");
 const CHROMIUM_BOOTSTRAP_LOCK = join(tmpdir(), "ene-sparticuz-chromium.bootstrap.lock");
 
+/** Vercel の /tmp は容量が小さく、Warm 再利用で Playwright プロファイルが積み上がり FILE_ERROR_NO_SPACE になりやすい */
+const PLAYWRIGHT_TMP_DIR_PREFIXES = [
+  "playwright_chromiumdev_profile-",
+  "playwright-artifacts-",
+  "playwright-profile-",
+] as const;
+
 async function cleanupPlaywrightTmpProfiles(): Promise<void> {
   const dir = tmpdir();
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
   if (entries.length === 0) return;
 
-  const now = Date.now();
-  // 連続実行時に /tmp が短時間で圧迫されるため、古い profile は積極的に掃除する。
-  const staleAgeMs = 2 * 60 * 1000;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const cleanupTarget =
-      entry.name.startsWith("playwright_chromiumdev_profile-") ||
-      entry.name.startsWith("playwright-artifacts-");
-    if (!cleanupTarget) continue;
+    const hit = PLAYWRIGHT_TMP_DIR_PREFIXES.some((p) => entry.name.startsWith(p));
+    if (!hit) continue;
     const fullPath = join(dir, entry.name);
-    const st = await stat(fullPath).catch(() => null);
-    if (!st) continue;
-    if (now - st.mtimeMs < staleAgeMs) continue;
     await rm(fullPath, { recursive: true, force: true }).catch(() => {});
   }
 }
