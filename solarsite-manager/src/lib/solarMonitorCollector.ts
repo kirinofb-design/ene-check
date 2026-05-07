@@ -75,6 +75,18 @@ function normalizeMonitoringSystemId(v: string | null | undefined): string {
   return (v ?? "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
+function looksLikeSolarMonitorTransientError(message: string): boolean {
+  const s = message.toLowerCase();
+  return (
+    s.includes("err_insufficient_resources") ||
+    s.includes("less than 64mb free space in temporary directory") ||
+    s.includes("file_error_no_space") ||
+    s.includes("target page, context or browser has been closed") ||
+    s.includes("execution context was destroyed") ||
+    s.includes("browsercontext.newpage")
+  );
+}
+
 
 export async function runSolarMonitorCollector(
   userId: string,
@@ -185,7 +197,28 @@ export async function runSolarMonitorCollector(
         });
       };
 
-      await createSession();
+      const ensureSessionWithRetry = async () => {
+        let lastError: unknown;
+        for (let attempt = 1; attempt <= 4; attempt++) {
+          try {
+            await createSession();
+            return;
+          } catch (e) {
+            lastError = e;
+            const msg = e instanceof Error ? e.message : String(e);
+            if (!looksLikeSolarMonitorTransientError(msg) || attempt === 4) {
+              throw e;
+            }
+            logger.warn("solarMonitorCollector: session bootstrap retry", {
+              extra: { systemId, attempt, message: msg },
+            });
+            await new Promise((resolve) => setTimeout(resolve, attempt < 3 ? 4_000 : 8_000));
+          }
+        }
+        throw lastError instanceof Error ? lastError : new Error(String(lastError));
+      };
+
+      await ensureSessionWithRetry();
 
       const links = await page.$$eval("#cphMain_gvList a", (els) =>
         els.map((e) => ({ text: e.textContent?.trim() ?? "", id: (e as HTMLAnchorElement).id ?? "" }))
