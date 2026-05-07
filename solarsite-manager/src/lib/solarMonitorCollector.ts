@@ -4,6 +4,7 @@ import { decryptSecret } from "@/lib/encryption";
 import { collectSolarMonitor, loginAndOpenSolarMonitorMenu } from "@/lib/solarMonitorBaseCollector";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
+import type { BrowserContext, Page } from "playwright-core";
 
 const TARGET_PLANTS_SF = [
   {
@@ -147,9 +148,12 @@ export async function runSolarMonitorCollector(
         }
       };
 
-      const createPageWithRecovery = async (currentContext: Awaited<ReturnType<typeof createBrowserContext>>) => {
+      const createPageWithRecovery = async (
+        currentContext: BrowserContext
+      ): Promise<{ context: BrowserContext; page: Page }> => {
         try {
-          return await currentContext.newPage();
+          const createdPage = await currentContext.newPage();
+          return { context: currentContext, page: createdPage };
         } catch {
           await currentContext.close().catch(() => {});
           await browser.close().catch(() => {});
@@ -162,20 +166,16 @@ export async function runSolarMonitorCollector(
 
       let context = await createBrowserContext();
       const firstPage = await createPageWithRecovery(context);
-      if ("context" in firstPage) {
-        context = firstPage.context;
-      }
-      let page = "page" in firstPage ? firstPage.page : firstPage;
+      context = firstPage.context;
+      let page = firstPage.page;
       page.setDefaultTimeout(60_000);
 
       const createSession = async () => {
         await context.close().catch(() => {});
         context = await createBrowserContext();
         const createdPage = await createPageWithRecovery(context);
-        if ("context" in createdPage) {
-          context = createdPage.context;
-        }
-        page = "page" in createdPage ? createdPage.page : createdPage;
+        context = createdPage.context;
+        page = createdPage.page;
         page.setDefaultTimeout(60_000);
         await loginAndOpenSolarMonitorMenu(page, {
           loginUrl: cfg.loginUrl,
