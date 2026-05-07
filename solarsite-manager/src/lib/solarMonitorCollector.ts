@@ -147,14 +147,35 @@ export async function runSolarMonitorCollector(
         }
       };
 
+      const createPageWithRecovery = async (currentContext: Awaited<ReturnType<typeof createBrowserContext>>) => {
+        try {
+          return await currentContext.newPage();
+        } catch {
+          await currentContext.close().catch(() => {});
+          await browser.close().catch(() => {});
+          browser = await launchSolarMonitorBrowser(true);
+          const recoveredContext = await createBrowserContext();
+          const recoveredPage = await recoveredContext.newPage();
+          return { context: recoveredContext, page: recoveredPage };
+        }
+      };
+
       let context = await createBrowserContext();
-      let page = await context.newPage();
+      const firstPage = await createPageWithRecovery(context);
+      if ("context" in firstPage) {
+        context = firstPage.context;
+      }
+      let page = "page" in firstPage ? firstPage.page : firstPage;
       page.setDefaultTimeout(60_000);
 
       const createSession = async () => {
         await context.close().catch(() => {});
         context = await createBrowserContext();
-        page = await context.newPage();
+        const createdPage = await createPageWithRecovery(context);
+        if ("context" in createdPage) {
+          context = createdPage.context;
+        }
+        page = "page" in createdPage ? createdPage.page : createdPage;
         page.setDefaultTimeout(60_000);
         await loginAndOpenSolarMonitorMenu(page, {
           loginUrl: cfg.loginUrl,
