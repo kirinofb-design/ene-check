@@ -14,7 +14,7 @@ on:
           - solar-monitor-sf
           - solar-monitor-se
       startDate:
-        description: "開始日 (YYYY-MM-DD)。未指定時はJST当月1日"
+        description: "開始日 (YYYY-MM-DD)。未指定時はJST昨日"
         required: false
         type: string
       endDate:
@@ -41,10 +41,6 @@ jobs:
             const inEnd = (process.env.INPUT_END_DATE || "").trim();
             const ymd = (d) => d.toISOString().slice(0, 10);
             const out = process.env.GITHUB_OUTPUT;
-            if (inStart && inEnd) {
-              require("fs").appendFileSync(out, `startDate=${inStart}\nendDate=${inEnd}\n`);
-              process.exit(0);
-            }
             const now = Date.now();
             const jstOffset = 9 * 60 * 60 * 1000;
             const jst = new Date(now + jstOffset);
@@ -52,8 +48,16 @@ jobs:
             const m = jst.getUTCMonth();
             const d = jst.getUTCDate();
             const yester = new Date(Date.UTC(y, m, d - 1, 0, 0, 0, 0));
-            const start = new Date(Date.UTC(yester.getUTCFullYear(), yester.getUTCMonth(), 1, 0, 0, 0, 0));
-            require("fs").appendFileSync(out, `startDate=${ymd(start)}\nendDate=${ymd(yester)}\n`);
+            let start = inStart;
+            let end = inEnd;
+            if (start && !end) end = start;
+            if (end && !start) start = end;
+            if (!start && !end) {
+              const yesterday = ymd(yester);
+              start = yesterday;
+              end = yesterday;
+            }
+            require("fs").appendFileSync(out, `startDate=${start}\nendDate=${end}\n`);
           '
 
   collect_risky:
