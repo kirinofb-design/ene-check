@@ -347,30 +347,6 @@ export default function DataCollectSection() {
           <p style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>同期期間を指定して、データを取得します。</p>
         </div>
 
-        <div
-          style={{
-            marginBottom: '18px',
-            padding: '12px 14px',
-            backgroundColor: '#f8fafc',
-            border: '1px solid #e2e8f0',
-            borderRadius: '10px',
-            fontSize: '11px',
-            color: '#334155',
-            lineHeight: 1.65,
-          }}
-        >
-          <strong style={{ color: '#0f172a' }}>以前と同じ流れです</strong>
-          ：「全データ一括取得」で6監視システムを順に実行し、全発電所分の日次データを
-          <strong>データベースに保存</strong>します。Excelは右の「Excel をダウンロード」で、
-          <strong>すでにDBにあるデータ</strong>を出力します。
-          <br />
-          <strong style={{ color: '#0f172a' }}>GitHub Actions</strong>
-          （Collect Fanout 等）は、定時・確認用の<strong>補助</strong>です。Vercelの制約で自動側は系統を絞ることがありますが、
-          <strong>画面のボタンが無くなったわけではありません。</strong>
-          <br />
-          長い期間を一度に取るとタイムアウトや失敗が出やすい場合は、期間を短く分けるか「個別システム取得」をご利用ください。
-        </div>
-
         <div style={{ display: 'flex', gap: '16px', marginBottom: '24px' }}>
           <div>
             <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#64748b' }}>開始日</label><br/>
