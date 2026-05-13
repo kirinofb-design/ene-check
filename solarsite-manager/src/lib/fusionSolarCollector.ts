@@ -605,23 +605,23 @@ export async function runFusionSolarCollector(
                 } else if (await monthOptionByText.count()) {
                   await monthOptionByText.click({ timeout: 8_000 });
                 } else {
-                  logger.warn("fusionSolarCollector: 月別オプションが見つからないため既定粒度で継続", {
-                    userId,
-                    extra: { station: station.name, yearMonth, url: page.url(), currentTitle },
-                  });
+                  throw new Error(
+                    `FusionSolar: 月別オプションが見つかりません（station=${station.name}, yearMonth=${yearMonth}）。`
+                  );
                 }
                 await page.waitForTimeout(500);
+                const selectedAfter = (await granularityEl.getAttribute("title")) ?? "";
+                if (!selectedAfter.includes("月別")) {
+                  throw new Error(
+                    `FusionSolar: 粒度を月別へ切り替えできませんでした（station=${station.name}, yearMonth=${yearMonth}, title=${selectedAfter}）。`
+                  );
+                }
               } catch (e) {
-                logger.warn("fusionSolarCollector: 月別切替に失敗したため既定粒度で継続", {
-                  userId,
-                  extra: {
-                    station: station.name,
-                    yearMonth,
-                    url: page.url(),
-                    currentTitle,
-                    error: e instanceof Error ? e.message : String(e),
-                  },
-                });
+                throw new Error(
+                  `FusionSolar: 月別切替に失敗しました（station=${station.name}, yearMonth=${yearMonth}）：${
+                    e instanceof Error ? e.message : String(e)
+                  }`
+                );
               }
             }
 

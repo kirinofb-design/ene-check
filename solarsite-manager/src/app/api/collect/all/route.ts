@@ -61,19 +61,36 @@ function looksLikeTransientCollectorError(message: string): boolean {
   const m = message.toLowerCase();
   return (
     m.includes("err_insufficient_resources") ||
+    m.includes("less than 64mb free space in temporary directory") ||
+    m.includes("file_error_no_space") ||
     m.includes("detached frame") ||
     m.includes("execution context was destroyed") ||
     m.includes("target page, context or browser has been closed") ||
+    m.includes("browsercontext.newpage") ||
     m.includes("ログインフォームの入力欄が表示されませんでした") ||
-    m.includes("ログイン後もログイン画面のまま")
+    m.includes("ログイン後もログイン画面のまま") ||
+    m.includes("ログイン画面のまま")
   );
+}
+
+function getCollectorRetryPolicy(key: string): { maxAttempts: number; waitMs: (attempt: number) => number } {
+  if (key === "laplace" || key === "solar-monitor-sf" || key === "solar-monitor-se") {
+    return {
+      maxAttempts: 5,
+      waitMs: (attempt) => (attempt < 3 ? 4000 : 8000),
+    };
+  }
+  return {
+    maxAttempts: 3,
+    waitMs: (attempt) => (attempt === 1 ? 1500 : 3500),
+  };
 }
 
 async function runCollectorWithRetry(
   key: string,
   runner: () => Promise<CollectorStepResult>
 ): Promise<CollectorStepResult> {
-  const maxAttempts = 3;
+  const { maxAttempts, waitMs } = getCollectorRetryPolicy(key);
   let last: CollectorStepResult | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await runner();
@@ -81,8 +98,7 @@ async function runCollectorWithRetry(
     last = result;
     if (!looksLikeTransientCollectorError(result.message)) return result;
     if (attempt >= maxAttempts) break;
-    const waitMs = attempt === 1 ? 1500 : 3500;
-    await new Promise((r) => setTimeout(r, waitMs));
+    await new Promise((r) => setTimeout(r, waitMs(attempt)));
   }
   return {
     ...(last ?? { key, ok: false, message: "collector failed", recordCount: 0, errorCount: 0 }),

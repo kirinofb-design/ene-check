@@ -261,6 +261,14 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     const frames = typeof page.frames === "function" ? page.frames() : [];
     return [page, ...frames];
   };
+  const bodyTextAnyRoot = async (): Promise<string> => {
+    const chunks: string[] = [];
+    for (const root of getRoots()) {
+      const t = await root.locator("body").innerText().catch(() => "");
+      if (t && t.trim()) chunks.push(t);
+    }
+    return chunks.join("\n");
+  };
 
   const idSelectors = [
     'input[name="username"]',
@@ -352,7 +360,7 @@ async function loginLaplace(page: any, loginId: string, password: string) {
   // ステップ3〜4: アラート処理後の描画待ち → 利用規約の再同意ページ
   await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
 
-  const bodyAfterLogin = await page.locator("body").innerText().catch(() => "");
+  const bodyAfterLogin = await bodyTextAnyRoot();
   const onTermsReconsentPage =
     bodyAfterLogin.includes("利用規約の再同意") ||
     bodyAfterLogin.includes("操作を続ける") ||
@@ -364,41 +372,54 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     logger.info("laplaceCollector: terms reconsent page detected", { extra: { url: page.url() } });
 
     // 文言ゆれに強い同意操作（チェック→続行）
-    const checkboxCandidates = [
-      page.getByRole("checkbox", { name: /利用規約/i }).first(),
-      page.locator('input[type="checkbox"]').first(),
+    const termsCheckboxSelectors = [
+      'input[type="checkbox"][name*="agree"]',
+      'input[type="checkbox"][id*="agree"]',
+      'input[type="checkbox"]',
     ];
-    for (const cb of checkboxCandidates) {
-      try {
-        if (await cb.count()) {
-          await cb.check({ timeout: 5000 }).catch(async () => {
-            await cb.click({ timeout: 5000 }).catch(() => {});
-          });
-          break;
+    const continueBtnSelectors = [
+      'button:has-text("操作を続ける")',
+      'button:has-text("同意して続ける")',
+      'button:has-text("同意")',
+      'button:has-text("次へ")',
+      'button:has-text("OK")',
+      'input[type="submit"]',
+      'a:has-text("操作を続ける")',
+    ];
+    const clickFirstFromAnyRoot = async (
+      selectors: string[],
+      timeoutMs = 8_000
+    ): Promise<boolean> => {
+      for (const root of getRoots()) {
+        for (const sel of selectors) {
+          const loc = root.locator(sel).first();
+          const count = await loc.count().catch(() => 0);
+          if (!count) continue;
+          const visible = await loc.isVisible().catch(() => true);
+          if (!visible) continue;
+          await loc.click({ timeout: timeoutMs }).catch(() => {});
+          return true;
         }
-      } catch {
-        // ignore
       }
+      return false;
+    };
+
+    let checked = false;
+    for (const root of getRoots()) {
+      const roleCb = root.getByRole("checkbox", { name: /利用規約|同意/i }).first();
+      if ((await roleCb.count().catch(() => 0)) > 0) {
+        await roleCb.check({ timeout: 5_000 }).catch(async () => {
+          await roleCb.click({ timeout: 5_000 }).catch(() => {});
+        });
+        checked = true;
+        break;
+      }
+    }
+    if (!checked) {
+      checked = await clickFirstFromAnyRoot(termsCheckboxSelectors, 5_000);
     }
 
-    const continueBtnCandidates = [
-      page.getByRole("button", { name: /操作を続ける|同意して続ける|次へ|OK|同意/i }).first(),
-      page.locator('button:has-text("操作を続ける")').first(),
-      page.locator('button:has-text("同意")').first(),
-      page.locator('input[type="submit"]').first(),
-    ];
-    let clicked = false;
-    for (const btn of continueBtnCandidates) {
-      try {
-        if (await btn.count()) {
-          await btn.click({ timeout: 8000 });
-          clicked = true;
-          break;
-        }
-      } catch {
-        // try next
-      }
-    }
+    const clicked = await clickFirstFromAnyRoot(continueBtnSelectors, 8_000);
     if (!clicked) {
       logger.warn("laplaceCollector: terms continue button not found", { extra: { url: page.url() } });
     }
@@ -408,15 +429,26 @@ async function loginLaplace(page: any, loginId: string, password: string) {
 
   logger.info("laplaceCollector: after login", { extra: { url: page.url(), title: await page.title() } });
 
-  const pwVisible = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
-  const loginBtnStill = await page.getByRole("button", { name: /ログイン|Login/i }).first().isVisible().catch(() => false);
-  const loginContainer = page.locator(".loginContainer").first();
-  const loginContainerVisible =
-    (await loginContainer.count()) > 0 && (await loginContainer.isVisible().catch(() => false));
-  const stillLogin = loginContainerVisible || pwVisible || loginBtnStill;
+  let stillLogin = false;
+  for (const root of getRoots()) {
+    const pwVisible = await root.locator('input[type="password"]').first().isVisible().catch(() => false);
+    const loginBtnStill = await root
+      .getByRole("button", { name: /ログイン|Login/i })
+      .first()
+      .isVisible()
+      .catch(() => false);
+    const loginContainer = root.locator(".loginContainer").first();
+    const loginContainerVisible =
+      (await loginContainer.count().catch(() => 0)) > 0 &&
+      (await loginContainer.isVisible().catch(() => false));
+    if (loginContainerVisible || pwVisible || loginBtnStill) {
+      stillLogin = true;
+      break;
+    }
+  }
 
   if (stillLogin) {
-    const bodySnippet = (await page.locator("body").innerText().catch(() => "")).slice(0, 1200);
+    const bodySnippet = (await bodyTextAnyRoot()).slice(0, 1200);
     logger.warn("laplaceCollector: login container still visible", {
       extra: { url: page.url(), bodySnippet: bodySnippet.replace(/\s+/g, " ").trim() },
     });
