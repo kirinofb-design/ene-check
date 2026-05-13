@@ -33,6 +33,16 @@ export default function DataCollectSection() {
     "solar-monitor-se": "須山（Solar Monitor）",
   };
 
+  /** 一括APIの step.key → 画面上の個別取得ボタン表記（handleCollect に渡す systemName と一致） */
+  const individualButtonByStepKey: Record<string, string> = {
+    "eco-megane": "eco-megane",
+    "fusion-solar": "FusionSolar",
+    sma: "SMA",
+    laplace: "ラプラス",
+    "solar-monitor-sf": "池新田・本社",
+    "solar-monitor-se": "須山",
+  };
+
   type CollectStep = {
     key: string;
     ok: boolean;
@@ -55,7 +65,18 @@ export default function DataCollectSection() {
       const mark = s.ok ? "成功" : "失敗";
       return `［${mark}］ ${name}\n  ${s.message}\n  （保存 ${s.recordCount} 件 / スキップ ${s.errorCount} 件）`;
     });
-    return `${head}\n\n──────── システム別（失敗を上に表示）────────\n\n${lines.join("\n\n")}`;
+    const failed = steps.filter((s) => !s.ok);
+    const failedGuide =
+      failed.length > 0
+        ? `\n\n──────── 失敗したシステムの再実行 ────────\n以下は「個別システム取得」の行で、上記と同じ開始日・終了日のまま、該当ボタンを押して再実行してください。\n\n${failed
+          .map((s) => {
+            const btn = individualButtonByStepKey[s.key] ?? s.key;
+            const label = collectorStepLabel[s.key] ?? s.key;
+            return `・ ${label} … ボタン「${btn}」`;
+          })
+          .join("\n")}\n\n成功したシステムのデータはすでにDBに保存されています。Excelは右の「Excel をダウンロード」で、その時点のDBを出力します。`
+        : "\n\nすべてのシステムが成功しました。Excelは右の「Excel をダウンロード」で出力できます。";
+    return `${head}\n\n──────── システム別（失敗を上に表示）────────\n\n${lines.join("\n\n")}${failedGuide}`;
   };
 
   const resolveApiMessage = (data: unknown, fallback: string, httpStatus?: number): string => {
