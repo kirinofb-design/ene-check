@@ -21,6 +21,14 @@ on:
         description: "終了日 (YYYY-MM-DD)。未指定時はJST昨日"
         required: false
         type: string
+      datePreset:
+        description: "日付の決め方（startDate/endDate を両方入れた場合はそちらが優先）"
+        required: false
+        default: yesterday
+        type: choice
+        options:
+          - yesterday
+          - jst_month
 
 jobs:
   resolve_dates:
@@ -28,6 +36,7 @@ jobs:
     env:
       INPUT_START_DATE: ${{ github.event.inputs.startDate }}
       INPUT_END_DATE: ${{ github.event.inputs.endDate }}
+      INPUT_DATE_PRESET: ${{ github.event.inputs.datePreset }}
     outputs:
       startDate: ${{ steps.dates.outputs.startDate }}
       endDate: ${{ steps.dates.outputs.endDate }}
@@ -39,6 +48,7 @@ jobs:
           node -e '
             const inStart = (process.env.INPUT_START_DATE || "").trim();
             const inEnd = (process.env.INPUT_END_DATE || "").trim();
+            const preset = (process.env.INPUT_DATE_PRESET || "yesterday").trim();
             const ymd = (d) => d.toISOString().slice(0, 10);
             const out = process.env.GITHUB_OUTPUT;
             const now = Date.now();
@@ -48,14 +58,24 @@ jobs:
             const m = jst.getUTCMonth();
             const d = jst.getUTCDate();
             const yester = new Date(Date.UTC(y, m, d - 1, 0, 0, 0, 0));
+            if (inStart && inEnd) {
+              require("fs").appendFileSync(out, `startDate=${inStart}\nendDate=${inEnd}\n`);
+              process.exit(0);
+            }
             let start = inStart;
             let end = inEnd;
             if (start && !end) end = start;
             if (end && !start) start = end;
             if (!start && !end) {
-              const yesterday = ymd(yester);
-              start = yesterday;
-              end = yesterday;
+              if (preset === "jst_month") {
+                const monthStart = new Date(Date.UTC(yester.getUTCFullYear(), yester.getUTCMonth(), 1, 0, 0, 0, 0));
+                start = ymd(monthStart);
+                end = ymd(yester);
+              } else {
+                const yesterday = ymd(yester);
+                start = yesterday;
+                end = yesterday;
+              }
             }
             require("fs").appendFileSync(out, `startDate=${start}\nendDate=${end}\n`);
           '
@@ -134,7 +154,7 @@ jobs:
               }
 
               if (system !== systems[systems.length - 1]) {
-                await sleep(90_000);
+                await sleep(120_000);
               }
             }
           '
