@@ -138,7 +138,7 @@ export default function ExcelExportSection() {
           </h2>
           <p style={{ fontSize: '12px', color: '#64748b', marginTop: '6px', lineHeight: '1.6' }}>
             対象月を選択してダウンロードしてください。<br/>
-            全サイトの日別発電データを1枚のExcelシートにまとめて出力します。<br/>
+            左の「データ取得」でDBに保存された、全サイトの日別発電データを1枚のExcelシートにまとめて出力します。<br/>
             当月データは毎朝5:30（JST）以降のダウンロードを推奨します。
           </p>
         </div>
