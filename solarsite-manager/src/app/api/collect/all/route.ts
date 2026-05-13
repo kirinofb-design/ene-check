@@ -21,6 +21,7 @@ import {
 import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
 import { applyForcedZeroOverrides, parseYmdToUtcDate } from "@/lib/forcedZeroRules";
+import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
 
 type CollectorStepResult = {
   key: string;
@@ -29,13 +30,6 @@ type CollectorStepResult = {
   recordCount: number;
   errorCount: number;
 };
-
-function diffDaysInclusive(startDate: string, endDate: string): number {
-  const s = Date.parse(`${startDate}T00:00:00.000Z`);
-  const e = Date.parse(`${endDate}T00:00:00.000Z`);
-  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 0;
-  return Math.floor((e - s) / (24 * 60 * 60 * 1000)) + 1;
-}
 
 async function applyPostCollectOverrides(startDate: string, endDate: string): Promise<void> {
   const reqStart = parseYmdToUtcDate(startDate);
@@ -184,15 +178,7 @@ export async function POST(request: Request) {
       // `spawn ETXTBSY` が起きることがあるため、起動前に一度だけ解決しておく。
       await prewarmVercelChromiumExecutable();
       // 同時実行の高負荷を避けるため、6システムを順次実行する。
-      const requestDays = diffDaysInclusive(startDate, endDate);
-      const fusionBudgetMs =
-        process.env.NODE_ENV === "production"
-          ? requestDays > 7
-            ? 90_000
-            : requestDays > 3
-              ? 120_000
-              : 150_000
-          : undefined;
+      const fusionBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
 
       const runners: Array<{
         key: string;

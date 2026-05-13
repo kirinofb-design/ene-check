@@ -6,6 +6,7 @@ import { runSmaCollector } from "@/lib/smaCollector";
 import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { runSolarMonitorCollector } from "@/lib/solarMonitorCollector";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
+import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
 
 export const maxDuration = 300;
 
@@ -24,13 +25,6 @@ function isAuthorizedInternal(request: Request): boolean {
   if (!secret) return false;
   const auth = request.headers.get("authorization") ?? "";
   return auth === `Bearer ${secret}`;
-}
-
-function diffDaysInclusive(startDate: string, endDate: string): number {
-  const s = Date.parse(`${startDate}T00:00:00.000Z`);
-  const e = Date.parse(`${endDate}T00:00:00.000Z`);
-  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 0;
-  return Math.floor((e - s) / (24 * 60 * 60 * 1000)) + 1;
 }
 
 function looksLikeTransientCollectorError(message: string): boolean {
@@ -134,9 +128,7 @@ export async function POST(request: Request) {
       case "eco-megane":
         return runEcoMeganeCollector(userId, startDate, endDate);
       case "fusion-solar": {
-        const requestDays = diffDaysInclusive(startDate, endDate);
-        const wallBudgetMs =
-          requestDays > 7 ? 90_000 : requestDays > 3 ? 120_000 : 150_000;
+        const wallBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
         return runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs });
       }
       case "sma":

@@ -566,7 +566,7 @@ export async function runFusionSolarCollector(
         const minRemainingToContinue = recordCount > 0 ? 15_000 : 5_000;
         if (remaining < minRemainingToContinue) {
           return {
-            ok: true,
+            ok: false,
             message: `FusionSolarの取得を実行時間の上限のためここまでにしました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。発電所×月の処理が重いため、開始日・終了日の範囲を短く分けて再実行してください。`,
             recordCount,
             errorCount,
