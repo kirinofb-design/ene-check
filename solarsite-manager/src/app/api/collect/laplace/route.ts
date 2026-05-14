@@ -3,6 +3,7 @@ import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
 import { runLaplaceCollector } from "@/lib/laplaceCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
+import { logger } from "@/lib/logger";
 
 export const maxDuration = 300;
 
@@ -12,7 +13,7 @@ export async function POST(request: Request) {
     const userId = (session.user as { id?: string })?.id;
     if (!userId) {
       return NextResponse.json(
-        { error: { code: "UNAUTHORIZED", message: "??????????" } },
+        { error: { code: "UNAUTHORIZED", message: "ログインが必要です。" } },
         { status: 401 }
       );
     }
@@ -37,19 +38,29 @@ export async function POST(request: Request) {
       );
     }
 
-    let result;
     try {
-      result = await runLaplaceCollector(userId, startDate, endDate);
+      const result = await runLaplaceCollector(userId, startDate, endDate);
+      return NextResponse.json({
+        ok: result.ok,
+        message: result.message,
+        recordCount: result.recordCount,
+        errorCount: result.errorCount,
+      });
+    } catch (collectorErr) {
+      const detail = collectorErr instanceof Error ? collectorErr.message : String(collectorErr);
+      logger.error("laplace collector threw", { userId, extra: { startDate, endDate, detail } }, collectorErr);
+      return NextResponse.json(
+        {
+          ok: false,
+          message: `ラプラス収集中に例外が発生しました: ${detail}`,
+          recordCount: 0,
+          errorCount: 0,
+        },
+        { status: 500 }
+      );
     } finally {
       releaseCollectorLock(userId, "laplace");
     }
-
-    return NextResponse.json({
-      ok: result.ok,
-      message: result.message,
-      recordCount: result.recordCount,
-      errorCount: result.errorCount,
-    });
   } catch (e) {
     return handleApiError(request, e);
   }

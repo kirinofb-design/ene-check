@@ -2,11 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { defaultCollectDateRange } from "@/lib/reportDateDefaults";
-import { runFusionSolarByStationAndMonthChunks, runLaplaceDayChunks } from "@/lib/browserChunkCollectors";
+import { runFusionSolarDayWindowChunks, runLaplaceDayChunks } from "@/lib/browserChunkCollectors";
 
-const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
+const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
-const LAPLACE_DAY_CHUNK = 5;
+const LAPLACE_DAY_CHUNK = 2;
 
 export default function DataCollectSection() {
   const [range, setRange] = useState(() => defaultCollectDateRange());
@@ -214,11 +214,11 @@ export default function DataCollectSection() {
             await fetchOneSystemStep({ key: "solar-monitor-se", button: "須山" });
           }
           if (!interrupted && !signal.aborted) {
-            const fus = await runFusionSolarByStationAndMonthChunks({
+            const fus = await runFusionSolarDayWindowChunks({
               rangeStart: range.startDate,
               rangeEnd: range.endDate,
               signal,
-              stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
+              windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
               resolveApiMessage,
               onSetInterrupted: (v) => {
                 interrupted = v;
@@ -302,11 +302,11 @@ export default function DataCollectSection() {
 
       if (systemName === "FusionSolar") {
         const noop = () => {};
-        const { step } = await runFusionSolarByStationAndMonthChunks({
+        const { step } = await runFusionSolarDayWindowChunks({
           rangeStart: range.startDate,
           rangeEnd: range.endDate,
           signal: new AbortController().signal,
-          stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
+          windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
           resolveApiMessage,
           onSetInterrupted: noop,
         });
@@ -635,9 +635,8 @@ export default function DataCollectSection() {
           </div>
           <p style={{ fontSize: "11px", color: "#64748b", marginTop: "10px", lineHeight: 1.5, marginBottom: 0 }}>
             「全データ一括取得」はブラウザから API
-            を順に呼び出します。FusionSolar は発電所×暦月、ラプラスは最大{LAPLACE_DAY_CHUNK}
-            日ごとに分割して呼び出し、長時間の 1
-            リクエストによるタイムアウトを避けます（完了までに時間がかかります）。
+            を順に呼び出します。FusionSolar は「1日＝全発電所」をサーバでまとめ取得し、期間は日ごとに複数回呼び出します。ラプラスは最大{LAPLACE_DAY_CHUNK}
+            日ずつに分割して呼び出します（リクエスト数が増えるため完了まで時間がかかります）。
           </p>
           {allLocked && lockMessage ? (
             <p style={{ fontSize: '11px', color: '#334155', marginTop: '6px', lineHeight: 1.5, marginBottom: 0 }}>

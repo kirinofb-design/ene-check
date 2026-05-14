@@ -17,6 +17,21 @@ const nextConfig = {
       "/api/auto-login": ["./node_modules/@sparticuz/chromium/**"],
       // puppeteer-extra-plugin-stealth は内部で evasions を動的 require するため、
       // Next のファイルトレースだけだと本番バンドルに evasions が欠けて落ちることがある。
+      "/api/collect/fusion-solar/window": [
+        "./node_modules/@sparticuz/chromium/**",
+        "./node_modules/playwright-core/**",
+        "./node_modules/puppeteer-extra/**",
+        "./node_modules/puppeteer-extra-plugin-stealth/**",
+        "./node_modules/puppeteer-extra-plugin-user-preferences/**",
+        "./node_modules/puppeteer-extra-plugin-user-data-dir/**",
+        "./node_modules/puppeteer-extra-plugin-user-data-dir/node_modules/**",
+        "./node_modules/puppeteer/**",
+        "./node_modules/fs-extra/**",
+        "./node_modules/universalify/**",
+        "./node_modules/jsonfile/**",
+        "./node_modules/graceful-fs/**",
+        "./node_modules/rimraf/**",
+      ],
       "/api/collect/fusion-solar/station": [
         "./node_modules/@sparticuz/chromium/**",
         "./node_modules/playwright-core/**",
