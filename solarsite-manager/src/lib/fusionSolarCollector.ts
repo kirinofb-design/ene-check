@@ -6,6 +6,7 @@ import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { autoLogin } from "@/lib/autoLogin";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import type { Page } from "playwright-core";
+import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
@@ -22,16 +23,6 @@ const HOME_URL_CANDIDATES = [
 const DEFAULT_WALL_BUDGET_MS =
   process.env.NODE_ENV === "production" ? 270_000 : 30 * 60 * 1000;
 
-const FUSION_SOLAR_STATIONS = [
-  { name: "フジHD湖西発電所", ne: "33652418" },
-  { name: "フジHD袋井市豊住高圧発電所", ne: "34130688" },
-  { name: "フジHD菊川市高橋第二発電所", ne: "33860228" },
-  { name: "フジHD牧之原市白井発電所", ne: "33733199" },
-  { name: "フジHD御前崎市合戸第二発電所", ne: "34631202" },
-  { name: "フジHD御前崎市佐倉第三発電所", ne: "34364567" },
-  { name: "フジ物産掛川市浜野高圧発電所", ne: "33558911" },
-  { name: "フジ物産御前崎市佐倉高圧発電所", ne: "33559317" },
-];
 const MAX_TABLE_PAGES_PER_STATION_MONTH = 20;
 const REPORT_PAGE_READY_TIMEOUT_MS = 35_000;
 const DEFAULT_STATION_MONTH_ATTEMPT_TIMEOUT_MS =

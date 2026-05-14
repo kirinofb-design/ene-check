@@ -2,6 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { defaultCollectDateRange } from "@/lib/reportDateDefaults";
+import { runFusionSolarByStationAndMonthChunks, runLaplaceDayChunks } from "@/lib/browserChunkCollectors";
+
+const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
+const COLLECT_PREWARM_URL = "/api/collect/prewarm";
+const LAPLACE_DAY_CHUNK = 5;
 
 export default function DataCollectSection() {
   const [range, setRange] = useState(() => defaultCollectDateRange());
@@ -16,7 +21,6 @@ export default function DataCollectSection() {
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
-    FusionSolar: "/api/collect/fusion-solar",
     SMA: "/api/collect/sma",
     ラプラス: "/api/collect/laplace",
     "池新田・本社": "/api/collect/solar-monitor-sf",
@@ -96,20 +100,8 @@ export default function DataCollectSection() {
     }
     return fallback;
   };
-  const isFusionSolarCappedMessage = (message: string): boolean =>
-    message.includes("実行時間の上限") || message.includes("ここまでにしました");
 
   const allCollectAbortRef = useRef<AbortController | null>(null);
-
-  /** Vercel では「全システムを1リクエストで」待つとゲートウェイ504になりやすいため、ブラウザからシステム別APIを順に呼ぶ。 */
-  const ALL_COLLECT_SEQUENCE: Array<{ key: CollectStep["key"]; button: string }> = [
-    { key: "eco-megane", button: "eco-megane" },
-    { key: "sma", button: "SMA" },
-    { key: "laplace", button: "ラプラス" },
-    { key: "solar-monitor-sf", button: "池新田・本社" },
-    { key: "solar-monitor-se", button: "須山" },
-    { key: "fusion-solar", button: "FusionSolar" },
-  ];
 
   const handleCollect = async (systemName: string) => {
     if (systemName === "all" && allLocked) {
@@ -131,186 +123,109 @@ export default function DataCollectSection() {
           (e instanceof DOMException && e.name === "AbortError") ||
           (e instanceof Error && e.name === "AbortError");
 
-        const pushFusionWithRetries = async (): Promise<boolean> => {
-          const endpoint = endpointBySystem.FusionSolar;
-          const maxFusionAttempts = 4;
-          let attempt = 0;
-          let totalRecordCount = 0;
-          let totalErrorCount = 0;
-          let hadFusionResponse = false;
-          let last: CollectStep = {
-            key: "fusion-solar",
-            ok: false,
-            message: "",
-            recordCount: 0,
-            errorCount: 0,
-          };
-          while (attempt < maxFusionAttempts) {
-            if (signal.aborted) {
-              interrupted = true;
-              break;
-            }
-            attempt++;
-            let response: Response;
-            try {
-              response = await fetch(endpoint, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  startDate: range.startDate,
-                  endDate: range.endDate,
-                }),
-                signal,
-              });
-            } catch (e) {
-              if (isAbortError(e)) {
-                interrupted = true;
-                if (hadFusionResponse) {
-                  steps.push({
-                    ...last,
-                    recordCount: totalRecordCount,
-                    errorCount: totalErrorCount,
-                    message: `${last.message}（取得中断）`,
-                  });
-                } else {
-                  steps.push({
-                    key: "fusion-solar",
-                    ok: false,
-                    message: "中断により FusionSolar を完了できませんでした。",
-                    recordCount: 0,
-                    errorCount: 0,
-                  });
-                }
-                return true;
-              }
-              throw e;
-            }
-            let data: unknown = null;
-            try {
-              data = await response.json();
-            } catch {
-              const text = await response.text().catch(() => "");
-              data = { message: text || null };
-            }
-            const oneRecordCount =
-              data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
-                ? (data as { recordCount: number }).recordCount
-                : 0;
-            const oneErrorCount =
-              data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
-                ? (data as { errorCount: number }).errorCount
-                : 0;
-            totalRecordCount += oneRecordCount;
-            totalErrorCount += oneErrorCount;
-            const msg = resolveApiMessage(
-              data,
-              response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
-              response.status
-            );
-            last = {
-              key: "fusion-solar",
-              ok: Boolean(response.ok && data && typeof data === "object" && (data as { ok?: boolean }).ok),
-              message:
-                attempt > 1
-                  ? `${msg}（FusionSolar 自動再実行 ${attempt} 回目 / 累計 保存 ${totalRecordCount} 件・スキップ ${totalErrorCount} 件）`
-                  : msg,
-              recordCount: oneRecordCount,
-              errorCount: oneErrorCount,
-            };
-            hadFusionResponse = true;
-            const canContinue =
-              response.ok &&
-              data &&
-              typeof data === "object" &&
-              Boolean((data as { ok?: boolean }).ok) &&
-              isFusionSolarCappedMessage(msg);
-            if (!canContinue) break;
-          }
-          if (attempt > 0) {
+        const fetchOneSystemStep = async (spec: {
+          key: CollectStep["key"];
+          button: string;
+        }): Promise<void> => {
+          const endpoint = endpointBySystem[spec.button];
+          if (!endpoint) {
             steps.push({
-              ...last,
-              recordCount: totalRecordCount,
-              errorCount: totalErrorCount,
-            });
-          } else if (interrupted) {
-            steps.push({
-              key: "fusion-solar",
+              key: spec.key,
               ok: false,
-              message: "中断により FusionSolar を開始できませんでした。",
+              message: "内部エラー: 収集エンドポイントが未定義です。",
               recordCount: 0,
               errorCount: 0,
             });
+            return;
           }
-          return interrupted;
+          let response: Response;
+          try {
+            response = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                startDate: range.startDate,
+                endDate: range.endDate,
+              }),
+              signal,
+            });
+          } catch (e) {
+            if (isAbortError(e)) {
+              interrupted = true;
+              return;
+            }
+            throw e;
+          }
+          let data: unknown = null;
+          try {
+            data = await response.json();
+          } catch {
+            const text = await response.text().catch(() => "");
+            data = { message: text || null };
+          }
+          const message = resolveApiMessage(
+            data,
+            response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
+            response.status
+          );
+          steps.push({
+            key: spec.key,
+            ok: Boolean(response.ok && data && typeof data === "object" && (data as { ok?: boolean }).ok),
+            message,
+            recordCount:
+              data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
+                ? (data as { recordCount: number }).recordCount
+                : 0,
+            errorCount:
+              data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
+                ? (data as { errorCount: number }).errorCount
+                : 0,
+          });
         };
 
         try {
-          for (const spec of ALL_COLLECT_SEQUENCE) {
-            if (signal.aborted) {
-              interrupted = true;
-              break;
-            }
-            if (spec.key === "laplace") {
-              await fetch("/api/collect/prewarm", { method: "POST", signal }).catch(() => {});
-            }
-            if (spec.key === "fusion-solar") {
-              if (await pushFusionWithRetries()) break;
-              continue;
-            }
-            const endpoint = endpointBySystem[spec.button];
-            if (!endpoint) {
-              steps.push({
-                key: spec.key,
-                ok: false,
-                message: "内部エラー: 収集エンドポイントが未定義です。",
-                recordCount: 0,
-                errorCount: 0,
-              });
-              continue;
-            }
-            let response: Response;
-            try {
-              response = await fetch(endpoint, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  startDate: range.startDate,
-                  endDate: range.endDate,
-                }),
-                signal,
-              });
-            } catch (e) {
-              if (isAbortError(e)) {
-                interrupted = true;
-                break;
-              }
-              throw e;
-            }
-            let data: unknown = null;
-            try {
-              data = await response.json();
-            } catch {
-              const text = await response.text().catch(() => "");
-              data = { message: text || null };
-            }
-            const message = resolveApiMessage(
-              data,
-              response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
-              response.status
-            );
-            steps.push({
-              key: spec.key,
-              ok: Boolean(response.ok && data && typeof data === "object" && (data as { ok?: boolean }).ok),
-              message,
-              recordCount:
-                data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
-                  ? (data as { recordCount: number }).recordCount
-                  : 0,
-              errorCount:
-                data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
-                  ? (data as { errorCount: number }).errorCount
-                  : 0,
+          if (signal.aborted) interrupted = true;
+          if (!interrupted && !signal.aborted) {
+            await fetchOneSystemStep({ key: "eco-megane", button: "eco-megane" });
+          }
+          if (!interrupted && !signal.aborted) {
+            await fetchOneSystemStep({ key: "sma", button: "SMA" });
+          }
+          if (!interrupted && !signal.aborted) {
+            const lap = await runLaplaceDayChunks({
+              rangeStart: range.startDate,
+              rangeEnd: range.endDate,
+              signal,
+              laplacePostUrl: endpointBySystem.ラプラス,
+              prewarmPostUrl: COLLECT_PREWARM_URL,
+              maxDaysPerChunk: LAPLACE_DAY_CHUNK,
+              resolveApiMessage,
+              onSetInterrupted: (v) => {
+                interrupted = v;
+              },
             });
+            steps.push(lap.step);
+            if (lap.flowAborted) interrupted = true;
+          }
+          if (!interrupted && !signal.aborted) {
+            await fetchOneSystemStep({ key: "solar-monitor-sf", button: "池新田・本社" });
+          }
+          if (!interrupted && !signal.aborted) {
+            await fetchOneSystemStep({ key: "solar-monitor-se", button: "須山" });
+          }
+          if (!interrupted && !signal.aborted) {
+            const fus = await runFusionSolarByStationAndMonthChunks({
+              rangeStart: range.startDate,
+              rangeEnd: range.endDate,
+              signal,
+              stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
+              resolveApiMessage,
+              onSetInterrupted: (v) => {
+                interrupted = v;
+              },
+            });
+            steps.push(fus.step);
+            if (fus.flowAborted) interrupted = true;
           }
 
           let mirrorAppend = "";
@@ -385,19 +300,53 @@ export default function DataCollectSection() {
         return;
       }
 
+      if (systemName === "FusionSolar") {
+        const noop = () => {};
+        const { step } = await runFusionSolarByStationAndMonthChunks({
+          rangeStart: range.startDate,
+          rangeEnd: range.endDate,
+          signal: new AbortController().signal,
+          stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
+          resolveApiMessage,
+          onSetInterrupted: noop,
+        });
+        const detail = `（保存 ${step.recordCount} 件 / スキップ ${step.errorCount} 件）`;
+        if (step.ok) {
+          alert(`FusionSolar: ${step.message}\n${detail}`);
+        } else {
+          alert(`FusionSolarのエラー:\n${step.message}\n${detail}`);
+        }
+        return;
+      }
+
+      if (systemName === "ラプラス") {
+        const noop = () => {};
+        const { step } = await runLaplaceDayChunks({
+          rangeStart: range.startDate,
+          rangeEnd: range.endDate,
+          signal: new AbortController().signal,
+          laplacePostUrl: endpointBySystem.ラプラス,
+          prewarmPostUrl: COLLECT_PREWARM_URL,
+          maxDaysPerChunk: LAPLACE_DAY_CHUNK,
+          resolveApiMessage,
+          onSetInterrupted: noop,
+        });
+        const detail = `（保存 ${step.recordCount} 件 / スキップ ${step.errorCount} 件）`;
+        if (step.ok) {
+          alert(`ラプラス: ${step.message}\n${detail}`);
+        } else {
+          alert(`ラプラスのエラー:\n${step.message}\n${detail}`);
+        }
+        return;
+      }
+
       const endpoint = endpointBySystem[systemName];
       if (!endpoint) {
         alert(`${systemName}の収集先が未定義です。`);
         return;
       }
-      const maxFusionAttempts = systemName === "FusionSolar" ? 4 : 1;
-      let attempt = 0;
-      let totalRecordCount = 0;
-      let totalErrorCount = 0;
-      let response: Response | null = null;
-      let data: unknown = null;
-      while (attempt < maxFusionAttempts) {
-        attempt++;
+      let response: Response;
+      try {
         response = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -407,39 +356,16 @@ export default function DataCollectSection() {
             system: systemName,
           }),
         });
-        try {
-          data = await response.json();
-        } catch {
-          const text = await response.text().catch(() => "");
-          data = { message: text || null };
-        }
-        if (systemName !== "FusionSolar") break;
-        const oneRecordCount =
-          data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
-            ? (data as { recordCount: number }).recordCount
-            : 0;
-        const oneErrorCount =
-          data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
-            ? (data as { errorCount: number }).errorCount
-            : 0;
-        totalRecordCount += oneRecordCount;
-        totalErrorCount += oneErrorCount;
-        const msg = resolveApiMessage(
-          data,
-          response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
-          response.status
-        );
-        const canContinue =
-          response.ok &&
-          data &&
-          typeof data === "object" &&
-          Boolean((data as { ok?: boolean }).ok) &&
-          isFusionSolarCappedMessage(msg);
-        if (!canContinue) break;
-      }
-      if (!response) {
+      } catch {
         alert(`${systemName}の通信に失敗しました`);
         return;
+      }
+      let data: unknown = null;
+      try {
+        data = await response.json();
+      } catch {
+        const text = await response.text().catch(() => "");
+        data = { message: text || null };
       }
 
       const message = resolveApiMessage(
@@ -448,13 +374,7 @@ export default function DataCollectSection() {
         response.status
       );
       if (data && typeof data === "object" && (data as { ok?: boolean }).ok) {
-        if (systemName === "FusionSolar" && maxFusionAttempts > 1 && attempt > 1) {
-          alert(
-            `${systemName}: ${message}\n（自動再実行 ${attempt} 回 / 累計 保存 ${totalRecordCount} 件・スキップ ${totalErrorCount} 件）`
-          );
-        } else {
-          alert(`${systemName}: ${message}`);
-        }
+        alert(`${systemName}: ${message}`);
       } else {
         alert(`${systemName}のエラー: ${message}`);
       }
@@ -714,8 +634,10 @@ export default function DataCollectSection() {
             </button>
           </div>
           <p style={{ fontSize: "11px", color: "#64748b", marginTop: "10px", lineHeight: 1.5, marginBottom: 0 }}>
-            「全データ一括取得」はブラウザからシステム別APIを順に呼び出します（1リクエストで6システムを待たないため、Vercel
-            のゲートウェイ504を避けやすくなっています）。各システム完了ごとにDBへ保存されます。
+            「全データ一括取得」はブラウザから API
+            を順に呼び出します。FusionSolar は発電所×暦月、ラプラスは最大{LAPLACE_DAY_CHUNK}
+            日ごとに分割して呼び出し、長時間の 1
+            リクエストによるタイムアウトを避けます（完了までに時間がかかります）。
           </p>
           {allLocked && lockMessage ? (
             <p style={{ fontSize: '11px', color: '#334155', marginTop: '6px', lineHeight: 1.5, marginBottom: 0 }}>
