@@ -17,6 +17,10 @@ const nextConfig = {
       "/api/auto-login": ["./node_modules/@sparticuz/chromium/**"],
       // puppeteer-extra-plugin-stealth は内部で evasions を動的 require するため、
       // Next のファイルトレースだけだと本番バンドルに evasions が欠けて落ちることがある。
+      "/api/collect/prewarm": [
+        "./node_modules/@sparticuz/chromium/**",
+        "./node_modules/playwright-core/**",
+      ],
       "/api/collect/all": [
         "./node_modules/@sparticuz/chromium/**",
         "./node_modules/puppeteer-extra/**",

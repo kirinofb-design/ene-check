@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 
 /** Vercel 等の上限を超えないよう長めに（ローカルでは無視されることが多い） */
 export const maxDuration = 300;
@@ -21,10 +20,9 @@ import {
 import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
 import { withPrismaRetry } from "@/lib/withPrismaRetry";
-import { applyForcedZeroOverrides, parseYmdToUtcDate } from "@/lib/forcedZeroRules";
 import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
-import { syncDailyGenerationMirrorIfConfigured } from "@/lib/syncDailyGenerationMirror";
 import { getCollectFanoutSecret } from "@/lib/collectFanoutSecret";
+import { postCollectAfterAllSystems } from "@/lib/postCollectFinalize";
 
 type CollectorStepResult = {
   key: string;
@@ -33,14 +31,6 @@ type CollectorStepResult = {
   recordCount: number;
   errorCount: number;
 };
-
-async function applyPostCollectOverrides(startDate: string, endDate: string): Promise<void> {
-  const reqStart = parseYmdToUtcDate(startDate);
-  const reqEnd = parseYmdToUtcDate(endDate);
-  if (!reqStart || !reqEnd) return;
-  // 並列収集で他システムに上書きされても、停止中サイトの 0 ルールを最後に適用する。
-  await applyForcedZeroOverrides(prisma, reqStart, reqEnd, "laplace");
-}
 
 async function runNamedCollector(
   key: string,
@@ -195,6 +185,7 @@ export async function POST(request: Request) {
 
     let steps: CollectorStepResult[];
     let cancelled = false;
+    let mirrorSync: Awaited<ReturnType<typeof postCollectAfterAllSystems>>["mirrorSync"] = null;
     try {
       if (isCollectorCancelRequested(userId, "all")) {
         return NextResponse.json({
@@ -282,11 +273,12 @@ export async function POST(request: Request) {
 
       cancelled = cancelled || isCollectorCancelRequested(userId, "all");
       if (!cancelled) {
-        await withPrismaRetry(() => applyPostCollectOverrides(startDate, endDate), {
+        const post = await withPrismaRetry(() => postCollectAfterAllSystems(startDate, endDate), {
           retries: 5,
           baseDelayMs: 1200,
           maxDelayMs: 15000,
         });
+        mirrorSync = post.mirrorSync;
       }
     } finally {
       releaseCollectorLock(userId, "all");
@@ -295,10 +287,7 @@ export async function POST(request: Request) {
     const recordCount = steps.reduce((sum, s) => sum + s.recordCount, 0);
     const errorCount = steps.reduce((sum, s) => sum + s.errorCount, 0);
 
-    const mirrorSync =
-      !cancelled && Boolean(process.env.DATABASE_MIRROR_URL?.trim())
-        ? await syncDailyGenerationMirrorIfConfigured(startDate, endDate)
-        : null;
+    const mirrorSyncForResponse = !cancelled ? mirrorSync : null;
 
     const allOk = steps.every((s) => s.ok);
     const statusWord = allOk ? "完了" : "一部失敗";
@@ -311,7 +300,7 @@ export async function POST(request: Request) {
       recordCount,
       errorCount,
       steps,
-      ...(mirrorSync != null ? { mirrorSync } : {}),
+      ...(mirrorSyncForResponse != null ? { mirrorSync: mirrorSyncForResponse } : {}),
     });
   } catch (e) {
     return handleApiError(request, e);

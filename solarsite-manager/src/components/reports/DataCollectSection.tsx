@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { defaultCollectDateRange } from "@/lib/reportDateDefaults";
 
 export default function DataCollectSection() {
@@ -21,7 +21,6 @@ export default function DataCollectSection() {
     ラプラス: "/api/collect/laplace",
     "池新田・本社": "/api/collect/solar-monitor-sf",
     須山: "/api/collect/solar-monitor-se",
-    all: "/api/collect/all",
   };
 
   const collectorStepLabel: Record<string, string> = {
@@ -81,7 +80,7 @@ export default function DataCollectSection() {
 
   const resolveApiMessage = (data: unknown, fallback: string, httpStatus?: number): string => {
     if (httpStatus === 504) {
-      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。FusionSolarなど重い処理は発電所×月のため時間がかかります。Vercel では環境変数 COLLECT_FANOUT_SECRET（または CRON_SECRET）を設定するとシステム別に分割実行されタイムアウトしにくくなります。開始日・終了日を短く分けて試す方法もあります。";
+      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。FusionSolar・ラプラスはブラウザからの分割取得でも数分かかります。Vercel Hobby は関数あたり約10秒制限があり、重いシステム単体でもタイムアウトすることがあります（その場合は Pro プランで maxDuration を延ばすか、期間を短く分割してください）。";
     }
     if (data && typeof data === "object") {
       const d = data as {
@@ -100,6 +99,18 @@ export default function DataCollectSection() {
   const isFusionSolarCappedMessage = (message: string): boolean =>
     message.includes("実行時間の上限") || message.includes("ここまでにしました");
 
+  const allCollectAbortRef = useRef<AbortController | null>(null);
+
+  /** Vercel では「全システムを1リクエストで」待つとゲートウェイ504になりやすいため、ブラウザからシステム別APIを順に呼ぶ。 */
+  const ALL_COLLECT_SEQUENCE: Array<{ key: CollectStep["key"]; button: string }> = [
+    { key: "eco-megane", button: "eco-megane" },
+    { key: "sma", button: "SMA" },
+    { key: "laplace", button: "ラプラス" },
+    { key: "solar-monitor-sf", button: "池新田・本社" },
+    { key: "solar-monitor-se", button: "須山" },
+    { key: "fusion-solar", button: "FusionSolar" },
+  ];
+
   const handleCollect = async (systemName: string) => {
     if (systemName === "all" && allLocked) {
       alert(lockMessage ?? "実行中（排他ロック中）です。完了してから再実行してください。");
@@ -107,7 +118,278 @@ export default function DataCollectSection() {
     }
     setLoading(systemName);
     try {
-      const endpoint = endpointBySystem[systemName] ?? "/api/collect/all";
+      if (systemName === "all") {
+        const signal = (() => {
+          const c = new AbortController();
+          allCollectAbortRef.current = c;
+          return c.signal;
+        })();
+        const steps: CollectStep[] = [];
+        let interrupted = false;
+
+        const isAbortError = (e: unknown): boolean =>
+          (e instanceof DOMException && e.name === "AbortError") ||
+          (e instanceof Error && e.name === "AbortError");
+
+        const pushFusionWithRetries = async (): Promise<boolean> => {
+          const endpoint = endpointBySystem.FusionSolar;
+          const maxFusionAttempts = 4;
+          let attempt = 0;
+          let totalRecordCount = 0;
+          let totalErrorCount = 0;
+          let hadFusionResponse = false;
+          let last: CollectStep = {
+            key: "fusion-solar",
+            ok: false,
+            message: "",
+            recordCount: 0,
+            errorCount: 0,
+          };
+          while (attempt < maxFusionAttempts) {
+            if (signal.aborted) {
+              interrupted = true;
+              break;
+            }
+            attempt++;
+            let response: Response;
+            try {
+              response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  startDate: range.startDate,
+                  endDate: range.endDate,
+                }),
+                signal,
+              });
+            } catch (e) {
+              if (isAbortError(e)) {
+                interrupted = true;
+                if (hadFusionResponse) {
+                  steps.push({
+                    ...last,
+                    recordCount: totalRecordCount,
+                    errorCount: totalErrorCount,
+                    message: `${last.message}（取得中断）`,
+                  });
+                } else {
+                  steps.push({
+                    key: "fusion-solar",
+                    ok: false,
+                    message: "中断により FusionSolar を完了できませんでした。",
+                    recordCount: 0,
+                    errorCount: 0,
+                  });
+                }
+                return true;
+              }
+              throw e;
+            }
+            let data: unknown = null;
+            try {
+              data = await response.json();
+            } catch {
+              const text = await response.text().catch(() => "");
+              data = { message: text || null };
+            }
+            const oneRecordCount =
+              data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
+                ? (data as { recordCount: number }).recordCount
+                : 0;
+            const oneErrorCount =
+              data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
+                ? (data as { errorCount: number }).errorCount
+                : 0;
+            totalRecordCount += oneRecordCount;
+            totalErrorCount += oneErrorCount;
+            const msg = resolveApiMessage(
+              data,
+              response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
+              response.status
+            );
+            last = {
+              key: "fusion-solar",
+              ok: Boolean(response.ok && data && typeof data === "object" && (data as { ok?: boolean }).ok),
+              message:
+                attempt > 1
+                  ? `${msg}（FusionSolar 自動再実行 ${attempt} 回目 / 累計 保存 ${totalRecordCount} 件・スキップ ${totalErrorCount} 件）`
+                  : msg,
+              recordCount: oneRecordCount,
+              errorCount: oneErrorCount,
+            };
+            hadFusionResponse = true;
+            const canContinue =
+              response.ok &&
+              data &&
+              typeof data === "object" &&
+              Boolean((data as { ok?: boolean }).ok) &&
+              isFusionSolarCappedMessage(msg);
+            if (!canContinue) break;
+          }
+          if (attempt > 0) {
+            steps.push({
+              ...last,
+              recordCount: totalRecordCount,
+              errorCount: totalErrorCount,
+            });
+          } else if (interrupted) {
+            steps.push({
+              key: "fusion-solar",
+              ok: false,
+              message: "中断により FusionSolar を開始できませんでした。",
+              recordCount: 0,
+              errorCount: 0,
+            });
+          }
+          return interrupted;
+        };
+
+        try {
+          for (const spec of ALL_COLLECT_SEQUENCE) {
+            if (signal.aborted) {
+              interrupted = true;
+              break;
+            }
+            if (spec.key === "laplace") {
+              await fetch("/api/collect/prewarm", { method: "POST", signal }).catch(() => {});
+            }
+            if (spec.key === "fusion-solar") {
+              if (await pushFusionWithRetries()) break;
+              continue;
+            }
+            const endpoint = endpointBySystem[spec.button];
+            if (!endpoint) {
+              steps.push({
+                key: spec.key,
+                ok: false,
+                message: "内部エラー: 収集エンドポイントが未定義です。",
+                recordCount: 0,
+                errorCount: 0,
+              });
+              continue;
+            }
+            let response: Response;
+            try {
+              response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  startDate: range.startDate,
+                  endDate: range.endDate,
+                }),
+                signal,
+              });
+            } catch (e) {
+              if (isAbortError(e)) {
+                interrupted = true;
+                break;
+              }
+              throw e;
+            }
+            let data: unknown = null;
+            try {
+              data = await response.json();
+            } catch {
+              const text = await response.text().catch(() => "");
+              data = { message: text || null };
+            }
+            const message = resolveApiMessage(
+              data,
+              response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
+              response.status
+            );
+            steps.push({
+              key: spec.key,
+              ok: Boolean(response.ok && data && typeof data === "object" && (data as { ok?: boolean }).ok),
+              message,
+              recordCount:
+                data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
+                  ? (data as { recordCount: number }).recordCount
+                  : 0,
+              errorCount:
+                data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
+                  ? (data as { errorCount: number }).errorCount
+                  : 0,
+            });
+          }
+
+          let mirrorAppend = "";
+          if (!interrupted && !signal.aborted) {
+            const fres = await fetch("/api/collect/all/finalize", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                startDate: range.startDate,
+                endDate: range.endDate,
+              }),
+              signal,
+            });
+            let fdata: unknown = null;
+            try {
+              fdata = await fres.json();
+            } catch {
+              const text = await fres.text().catch(() => "");
+              fdata = { message: text || null };
+            }
+            if (!fres.ok || !fdata || typeof fdata !== "object" || !(fdata as { ok?: boolean }).ok) {
+              mirrorAppend = `\n\n──────── 後処理 ────────\n${resolveApiMessage(
+                fdata,
+                `後処理 API が失敗しました（HTTP ${fres.status}）`,
+                fres.status
+              )}`;
+            } else {
+              const ms = (fdata as { mirrorSync?: unknown }).mirrorSync;
+              if (ms && typeof ms === "object") {
+                const m = ms as { ok?: boolean; upserted?: number; skippedNoMirrorSite?: number; message?: string };
+                mirrorAppend = `\n\n──────── ミラーDB同期 ────────\n${
+                  m.ok
+                    ? `成功（反映 ${Number(m.upserted ?? 0)} 件 / ミラー側に無いサイトでスキップ ${Number(
+                        m.skippedNoMirrorSite ?? 0
+                      )} 件）`
+                    : `失敗: ${String(m.message ?? "不明なエラー")}`
+                }`;
+              }
+            }
+          } else {
+            mirrorAppend =
+              "\n\n──────── 後処理 ────────\n中断のため、強制0ルール適用とミラー同期は実行していません。";
+          }
+
+          const recordCount = steps.reduce((s, x) => s + x.recordCount, 0);
+          const errorCount = steps.reduce((s, x) => s + x.errorCount, 0);
+          const allOk = steps.length > 0 && steps.every((s) => s.ok);
+          const statusWord = interrupted ? "中断" : allOk ? "完了" : "一部失敗";
+          const head = interrupted
+            ? `一括取得が中断されました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`
+            : `全コレクター実行が${statusWord}しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`;
+          alert(formatAllCollectResult({ message: head, steps }) + mirrorAppend);
+        } catch (e) {
+          const aborted =
+            (e instanceof DOMException && e.name === "AbortError") ||
+            (e instanceof Error && e.name === "AbortError");
+          if (aborted) {
+            const recordCount = steps.reduce((s, x) => s + x.recordCount, 0);
+            const errorCount = steps.reduce((s, x) => s + x.errorCount, 0);
+            alert(
+              formatAllCollectResult({
+                message: `実行取消または通信中断により一括取得を終了しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`,
+                steps,
+              }) + "\n\n──────── 後処理 ────────\n中断のため、強制0ルール適用とミラー同期は実行していません。"
+            );
+          } else {
+            alert(`allの通信に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        } finally {
+          allCollectAbortRef.current = null;
+        }
+        return;
+      }
+
+      const endpoint = endpointBySystem[systemName];
+      if (!endpoint) {
+        alert(`${systemName}の収集先が未定義です。`);
+        return;
+      }
       const maxFusionAttempts = systemName === "FusionSolar" ? 4 : 1;
       let attempt = 0;
       let totalRecordCount = 0;
@@ -160,16 +442,6 @@ export default function DataCollectSection() {
         return;
       }
 
-      if (
-        systemName === "all" &&
-        data &&
-        typeof data === "object" &&
-        Array.isArray((data as { steps?: unknown[] }).steps)
-      ) {
-        alert(formatAllCollectResult(data as { message?: string; steps?: CollectStep[] }));
-        return;
-      }
-
       const message = resolveApiMessage(
         data,
         response.ok ? "処理が完了しました。" : `APIエラーが発生しました（HTTP ${response.status}）`,
@@ -194,6 +466,18 @@ export default function DataCollectSection() {
   };
 
   const handleCancelAll = async () => {
+    if (loading === "all" && allCollectAbortRef.current) {
+      allCollectAbortRef.current.abort();
+      try {
+        await fetch("/api/collect/all/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch {
+        /* 取消通知はベストエフォート */
+      }
+      return;
+    }
     try {
       const res = await fetch("/api/collect/all/cancel", {
         method: "POST",
@@ -422,15 +706,16 @@ export default function DataCollectSection() {
             </button>
             <button
               style={cancelBtnStyle}
-              onClick={handleCancelAll}
-              disabled={!allLocked || allCancelRequested}
-              title={!allLocked ? "実行中のみ取消できます" : undefined}
+              onClick={() => void handleCancelAll()}
+              disabled={(!allLocked && loading !== "all") || allCancelRequested}
+              title={!allLocked && loading !== "all" ? "実行中のみ取消できます" : undefined}
             >
               {allCancelRequested ? "取消受付済み" : "実行取消"}
             </button>
           </div>
-          <p style={{ fontSize: '11px', color: '#64748b', marginTop: '10px', lineHeight: 1.5, marginBottom: 0 }}>
-            6システムを分割して順次実行します。各システム完了ごとにDBへ保存されるため、途中停止時も完了分は保持されます。
+          <p style={{ fontSize: "11px", color: "#64748b", marginTop: "10px", lineHeight: 1.5, marginBottom: 0 }}>
+            「全データ一括取得」はブラウザからシステム別APIを順に呼び出します（1リクエストで6システムを待たないため、Vercel
+            のゲートウェイ504を避けやすくなっています）。各システム完了ごとにDBへ保存されます。
           </p>
           {allLocked && lockMessage ? (
             <p style={{ fontSize: '11px', color: '#334155', marginTop: '6px', lineHeight: 1.5, marginBottom: 0 }}>
