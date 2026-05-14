@@ -81,7 +81,7 @@ export default function DataCollectSection() {
 
   const resolveApiMessage = (data: unknown, fallback: string, httpStatus?: number): string => {
     if (httpStatus === 504) {
-      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。FusionSolarなど重い処理は発電所×月のため時間がかかります。開始日・終了日を短く分けて試すか、混雑していない時間帯に再実行してください。";
+      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。FusionSolarなど重い処理は発電所×月のため時間がかかります。Vercel では環境変数 COLLECT_FANOUT_SECRET（または CRON_SECRET）を設定するとシステム別に分割実行されタイムアウトしにくくなります。開始日・終了日を短く分けて試す方法もあります。";
     }
     if (data && typeof data === "object") {
       const d = data as {

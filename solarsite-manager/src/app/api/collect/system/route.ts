@@ -21,10 +21,12 @@ type CollectSystemId =
 type CollectResult = { ok: boolean; message: string; recordCount: number; errorCount: number };
 
 function isAuthorizedInternal(request: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
   const auth = request.headers.get("authorization") ?? "";
-  return auth === `Bearer ${secret}`;
+  const cron = process.env.CRON_SECRET?.trim();
+  const fanout = process.env.COLLECT_FANOUT_SECRET?.trim();
+  if (cron && auth === `Bearer ${cron}`) return true;
+  if (fanout && auth === `Bearer ${fanout}`) return true;
+  return false;
 }
 
 function looksLikeTransientCollectorError(message: string): boolean {

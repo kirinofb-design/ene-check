@@ -23,6 +23,8 @@ import { ensureDbReachable } from "@/lib/ensureDbReachable";
 import { withPrismaRetry } from "@/lib/withPrismaRetry";
 import { applyForcedZeroOverrides, parseYmdToUtcDate } from "@/lib/forcedZeroRules";
 import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
+import { syncDailyGenerationMirrorIfConfigured } from "@/lib/syncDailyGenerationMirror";
+import { getCollectFanoutSecret } from "@/lib/collectFanoutSecret";
 
 type CollectorStepResult = {
   key: string;
@@ -118,10 +120,12 @@ async function runCollectorWithRetry(
 }
 
 function canUseFanoutMode(): boolean {
-  if (process.env.NODE_ENV !== "production") return false;
-  if (!process.env.CRON_SECRET) return false;
   if (process.env.COLLECT_FANOUT_MODE === "0") return false;
-  return true;
+  if (!getCollectFanoutSecret()) return false;
+  // Vercel（本番・Preview）では 1 リクエストに全コレクターを載せるとゲートウェイタイムアウトしやすいためファンアウトを既定で有効化
+  if (process.env.VERCEL) return true;
+  if (process.env.NODE_ENV === "production") return true;
+  return false;
 }
 
 export async function POST(request: Request) {
@@ -248,7 +252,7 @@ export async function POST(request: Request) {
                 method: "POST",
                 headers: {
                   "content-type": "application/json",
-                  authorization: `Bearer ${process.env.CRON_SECRET}`,
+                  authorization: `Bearer ${getCollectFanoutSecret()}`,
                 },
                 body: JSON.stringify({
                   system: runner.key,
@@ -291,6 +295,11 @@ export async function POST(request: Request) {
     const recordCount = steps.reduce((sum, s) => sum + s.recordCount, 0);
     const errorCount = steps.reduce((sum, s) => sum + s.errorCount, 0);
 
+    const mirrorSync =
+      !cancelled && Boolean(process.env.DATABASE_MIRROR_URL?.trim())
+        ? await syncDailyGenerationMirrorIfConfigured(startDate, endDate)
+        : null;
+
     const allOk = steps.every((s) => s.ok);
     const statusWord = allOk ? "完了" : "一部失敗";
 
@@ -302,6 +311,7 @@ export async function POST(request: Request) {
       recordCount,
       errorCount,
       steps,
+      ...(mirrorSync != null ? { mirrorSync } : {}),
     });
   } catch (e) {
     return handleApiError(request, e);
