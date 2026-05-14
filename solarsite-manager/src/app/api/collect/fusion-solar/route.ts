@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
     try {
-      await ensureDbReachable(5);
+      await ensureDbReachable();
     } catch {
       return NextResponse.json(
         {

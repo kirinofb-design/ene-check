@@ -20,6 +20,7 @@ import {
 } from "@/lib/collectorLock";
 import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
+import { withPrismaRetry } from "@/lib/withPrismaRetry";
 import { applyForcedZeroOverrides, parseYmdToUtcDate } from "@/lib/forcedZeroRules";
 import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
 
@@ -69,12 +70,22 @@ function looksLikeTransientCollectorError(message: string): boolean {
     m.includes("browsercontext.newpage") ||
     m.includes("ログインフォームの入力欄が表示されませんでした") ||
     m.includes("ログイン後もログイン画面のまま") ||
-    m.includes("ログイン画面のまま")
+    m.includes("ログイン画面のまま") ||
+    m.includes("can't reach database server") ||
+    m.includes("can't reach database") ||
+    m.includes("p1001") ||
+    m.includes("invalid prisma.") ||
+    m.includes("server has closed the connection")
   );
 }
 
 function getCollectorRetryPolicy(key: string): { maxAttempts: number; waitMs: (attempt: number) => number } {
-  if (key === "laplace" || key === "solar-monitor-sf" || key === "solar-monitor-se") {
+  if (
+    key === "laplace" ||
+    key === "solar-monitor-sf" ||
+    key === "solar-monitor-se" ||
+    key === "fusion-solar"
+  ) {
     return {
       maxAttempts: 5,
       waitMs: (attempt) => (attempt < 3 ? 4000 : 8000),
@@ -132,7 +143,7 @@ export async function POST(request: Request) {
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
 
     try {
-      await ensureDbReachable(3);
+      await ensureDbReachable();
     } catch {
       return NextResponse.json(
         {
@@ -267,7 +278,11 @@ export async function POST(request: Request) {
 
       cancelled = cancelled || isCollectorCancelRequested(userId, "all");
       if (!cancelled) {
-        await applyPostCollectOverrides(startDate, endDate);
+        await withPrismaRetry(() => applyPostCollectOverrides(startDate, endDate), {
+          retries: 5,
+          baseDelayMs: 1200,
+          maxDelayMs: 15000,
+        });
       }
     } finally {
       releaseCollectorLock(userId, "all");

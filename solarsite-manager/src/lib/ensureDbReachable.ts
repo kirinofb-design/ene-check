@@ -1,22 +1,15 @@
 import { prisma } from "@/lib/prisma";
+import { withPrismaRetry } from "@/lib/withPrismaRetry";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Neon 等の一時切断に耐えるため、短いバックオフで接続確認する */
-export async function ensureDbReachable(retries = 5): Promise<void> {
-  let lastError: unknown = null;
-  for (let i = 0; i < retries; i++) {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-      return;
-    } catch (e) {
-      lastError = e;
-      if (i < retries - 1) {
-        await sleep(1200 * (i + 1));
-      }
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("Database unreachable");
+/**
+ * Neon 等の一時切断・スリープ復帰直後に耐えるため、接続確立後に SELECT 1 をリトライ付きで実行する。
+ * 成否は withPrismaRetry 内の指数バックオフに任せる（非一時エラーは即失敗）。
+ */
+export async function ensureDbReachable(retries = 8): Promise<void> {
+  await prisma.$connect().catch(() => {});
+  await withPrismaRetry(() => prisma.$queryRaw`SELECT 1`, {
+    retries,
+    baseDelayMs: 1000,
+    maxDelayMs: 14000,
+  });
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { withPrismaRetry } from "@/lib/withPrismaRetry";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export async function GET() {
   let dbOk = false;
   let dbError: string | null = null;
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await withPrismaRetry(() => prisma.$queryRaw`SELECT 1`, { retries: 4, baseDelayMs: 600, maxDelayMs: 8000 });
     dbOk = true;
   } catch (err) {
     dbError = err instanceof Error ? err.message : "DB query failed";

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/apiError";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
+import { withPrismaRetry } from "@/lib/withPrismaRetry";
 import { ensureSiteMasterSeededIfEmpty } from "@/lib/siteMaster";
 import { utils, write } from "xlsx";
 
@@ -103,8 +104,8 @@ function listDates(start: Date, end: Date): string[] {
 export async function GET(request: Request) {
   try {
     await requireAuth(request);
-    await ensureDbReachable(5);
-    await ensureSiteMasterSeededIfEmpty();
+    await ensureDbReachable();
+    await withPrismaRetry(() => ensureSiteMasterSeededIfEmpty());
 
     const { searchParams } = new URL(request.url);
     const monthParam = parseMonthParam(searchParams.get("month"));
@@ -131,20 +132,24 @@ export async function GET(request: Request) {
     const dateHeaders = dates.map(ymdSlash);
 
     // 全発電所（全Site）を対象に出力
-    const sites = await prisma.site.findMany({
-      orderBy: [{ createdAt: "asc" }, { siteName: "asc" }],
-      select: { id: true, siteName: true, monitoringSystem: true },
-    });
+    const sites = await withPrismaRetry(() =>
+      prisma.site.findMany({
+        orderBy: [{ createdAt: "asc" }, { siteName: "asc" }],
+        select: { id: true, siteName: true, monitoringSystem: true },
+      })
+    );
     const siteIds = sites.map((s) => s.id);
 
     const records = siteIds.length
-      ? await prisma.dailyGeneration.findMany({
-          where: {
-            siteId: { in: siteIds },
-            date: { gte: start, lte: end },
-          },
-          select: { siteId: true, date: true, generation: true },
-        })
+      ? await withPrismaRetry(() =>
+          prisma.dailyGeneration.findMany({
+            where: {
+              siteId: { in: siteIds },
+              date: { gte: start, lte: end },
+            },
+            select: { siteId: true, date: true, generation: true },
+          })
+        )
       : [];
 
     const siteById = new Map(sites.map((s) => [s.id, s]));

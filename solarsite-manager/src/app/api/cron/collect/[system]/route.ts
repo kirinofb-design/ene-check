@@ -137,7 +137,7 @@ export async function GET(
   }
 
   try {
-    await ensureDbReachable(3);
+    await ensureDbReachable();
   } catch {
     return NextResponse.json(
       { ok: false, message: "データベース接続に失敗しました。", recordCount: 0, errorCount: 0 },

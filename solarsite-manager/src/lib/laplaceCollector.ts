@@ -3,8 +3,9 @@ import os from "os";
 import path from "path";
 import AdmZip from "adm-zip";
 import iconv from "iconv-lite";
-import type { Download, Page } from "playwright-core";
+import type { Download, Frame, Page } from "playwright-core";
 import { prisma } from "@/lib/prisma";
+import { withPrismaRetry } from "@/lib/withPrismaRetry";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import { decryptSecret } from "@/lib/encryption";
@@ -357,21 +358,63 @@ async function loginLaplace(page: any, loginId: string, password: string) {
   }
   if (!submitOk) throw new Error("ラプラス: ログインボタンが見つかりません。");
 
-  // ステップ3〜4: アラート処理後の描画待ち → 利用規約の再同意ページ
-  await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+  // ログイン POST 後の遷移待ち（SPA のため networkidle だけに依存しない）
+  await page.waitForTimeout(1800);
+  await page.waitForLoadState("domcontentloaded", { timeout: 35_000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 25_000 }).catch(() => {});
 
-  const bodyAfterLogin = await bodyTextAnyRoot();
-  const onTermsReconsentPage =
-    bodyAfterLogin.includes("利用規約の再同意") ||
-    bodyAfterLogin.includes("操作を続ける") ||
-    bodyAfterLogin.includes("利用規約を読み、その内容に同意します") ||
-    (bodyAfterLogin.includes("利用規約") &&
-      (bodyAfterLogin.includes("同意") || bodyAfterLogin.includes("読み")));
+  const collectFrameUrls = (): string[] => {
+    const out: string[] = [page.url()];
+    try {
+      for (const f of page.frames()) {
+        const u = f.url();
+        if (u && !u.startsWith("about:") && !u.startsWith("chrome-extension:")) out.push(u);
+      }
+    } catch {
+      /* ignore */
+    }
+    return out;
+  };
 
-  if (onTermsReconsentPage) {
+  const looksLikePostLoginNavigation = (): boolean =>
+    collectFrameUrls().some(
+      (u) =>
+        /\/servicelist/i.test(u) ||
+        /grandarch\.energymntr\.com/i.test(u) ||
+        (/laplaceid\.energymntr\.com/i.test(u) &&
+          /\/(account|home|mypage|main|dashboard|top)(\/|\?|#|$)/i.test(u))
+    );
+
+  const clickFirstFromAnyRoot = async (selectors: string[], timeoutMs = 8_000): Promise<boolean> => {
+    for (const root of getRoots()) {
+      for (const sel of selectors) {
+        const loc = root.locator(sel).first();
+        const count = await loc.count().catch(() => 0);
+        if (!count) continue;
+        const visible = await loc.isVisible().catch(() => true);
+        if (!visible) continue;
+        await loc.click({ timeout: timeoutMs }).catch(() => {});
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const tryAcceptTermsReconsent = async (): Promise<boolean> => {
+    const bodyAfterLogin = await bodyTextAnyRoot();
+    const onTermsReconsentPage =
+      bodyAfterLogin.includes("利用規約の再同意") ||
+      bodyAfterLogin.includes("操作を続ける") ||
+      bodyAfterLogin.includes("利用規約を読み、その内容に同意します") ||
+      bodyAfterLogin.includes("規約に同意して") ||
+      bodyAfterLogin.includes("以下にチェックを入れ") ||
+      (bodyAfterLogin.includes("利用規約") &&
+        (bodyAfterLogin.includes("同意") || bodyAfterLogin.includes("読み")));
+
+    if (!onTermsReconsentPage) return false;
+
     logger.info("laplaceCollector: terms reconsent page detected", { extra: { url: page.url() } });
 
-    // 文言ゆれに強い同意操作（チェック→続行）
     const termsCheckboxSelectors = [
       'input[type="checkbox"][name*="agree"]',
       'input[type="checkbox"][id*="agree"]',
@@ -380,29 +423,16 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     const continueBtnSelectors = [
       'button:has-text("操作を続ける")',
       'button:has-text("同意して続ける")',
+      'button:has-text("同意して進む")',
       'button:has-text("同意")',
       'button:has-text("次へ")',
+      'button:has-text("続行")',
+      'button:has-text("確定")',
       'button:has-text("OK")',
       'input[type="submit"]',
       'a:has-text("操作を続ける")',
+      '[role="button"]:has-text("操作を続ける")',
     ];
-    const clickFirstFromAnyRoot = async (
-      selectors: string[],
-      timeoutMs = 8_000
-    ): Promise<boolean> => {
-      for (const root of getRoots()) {
-        for (const sel of selectors) {
-          const loc = root.locator(sel).first();
-          const count = await loc.count().catch(() => 0);
-          if (!count) continue;
-          const visible = await loc.isVisible().catch(() => true);
-          if (!visible) continue;
-          await loc.click({ timeout: timeoutMs }).catch(() => {});
-          return true;
-        }
-      }
-      return false;
-    };
 
     let checked = false;
     for (const root of getRoots()) {
@@ -425,13 +455,28 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     }
 
     await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+    return true;
+  };
+
+  for (let pass = 0; pass < 3; pass++) {
+    if (looksLikePostLoginNavigation()) break;
+    const handled = await tryAcceptTermsReconsent();
+    if (!handled) break;
+    await page.waitForTimeout(1000);
   }
 
   logger.info("laplaceCollector: after login", { extra: { url: page.url(), title: await page.title() } });
 
+  if (looksLikePostLoginNavigation()) {
+    logger.info("laplaceCollector: post-login URL detected, skipping login-form heuristic");
+    return;
+  }
+
   let stillLogin = false;
   for (const root of getRoots()) {
-    const pwVisible = await root.locator('input[type="password"]').first().isVisible().catch(() => false);
+    const pwLoc = root.locator('input[type="password"]').first();
+    const pwVisible =
+      (await pwLoc.count().catch(() => 0)) > 0 && (await pwLoc.isVisible().catch(() => false));
     const loginBtnStill = await root
       .getByRole("button", { name: /ログイン|Login/i })
       .first()
@@ -441,7 +486,8 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     const loginContainerVisible =
       (await loginContainer.count().catch(() => 0)) > 0 &&
       (await loginContainer.isVisible().catch(() => false));
-    if (loginContainerVisible || pwVisible || loginBtnStill) {
+    // ログイン失敗時は多くの場合パスワード欄＋ログインボタンが揃う。片方だけでは誤検知しやすい。
+    if (loginContainerVisible || (pwVisible && loginBtnStill)) {
       stillLogin = true;
       break;
     }
@@ -467,118 +513,250 @@ async function loginLaplace(page: any, loginId: string, password: string) {
   }
 }
 
-async function openGrandArchFromServiceList(page: any): Promise<any> {
+/** メインページと子 iframe を横断して探索する（サービス一覧が iframe 内にあるケース向け） */
+function collectPlaywrightRoots(page: Page): Array<Page | Frame> {
+  const out: Array<Page | Frame> = [page];
+  try {
+    for (const f of page.frames()) {
+      if (f === page.mainFrame()) continue;
+      const u = f.url();
+      if (!u || u === "about:blank") continue;
+      out.push(f);
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/** L・eye 総合監視カードの表記ゆれ（中点・半角中点・ハイフン、Grand Arch 名） */
+function textMatchesLeyeGrandMonitoringCard(text: string): boolean {
+  const t = text.normalize("NFKC").replace(/\s+/g, " ");
+  if (!t.trim()) return false;
+  const leye = /l\s*[・･\u30FB\uFF65.‐-]\s*eye/i.test(t) || /l\s*eye/i.test(t);
+  const monitoring = t.includes("総合監視");
+  const grandArch = /grand\s*arch/i.test(t) || t.includes("グランドアーチ");
+  return (leye && monitoring) || (grandArch && (monitoring || t.includes("監視")));
+}
+
+function textMatchesServiceOpenButton(text: string): boolean {
+  const s = text.normalize("NFKC").trim();
+  if (!s) return false;
+  return /^(開く|起動|表示する?|リンク|アクセス|OK|こちら)$/i.test(s) || s.includes("開く");
+}
+
+async function openGrandArchFromServiceList(page: Page): Promise<Page> {
   await page.goto(LAPLACE_SERVICE_LIST_URL, { waitUntil: "domcontentloaded" });
-  await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 35_000 }).catch(() => {});
+  await page.waitForTimeout(2000);
 
-  const html = (await page.content().catch(() => "")) as string;
-  console.log("servicelist html:", html.slice(0, 3000));
+  const htmlSnippet = ((await page.content().catch(() => "")) as string).slice(0, 4000);
+  logger.info("laplaceCollector: servicelist loaded", { extra: { url: page.url(), htmlSnippet: htmlSnippet.replace(/\s+/g, " ") } });
 
-  const hasPlaywrightContext = page && typeof page.context === "function" && typeof page.waitForURL === "function";
-  if (hasPlaywrightContext) {
-    const context = page.context();
-    const popupPromise =
-      context && typeof context.waitForEvent === "function"
-        ? context.waitForEvent("page", { timeout: 10000 }).catch(() => null)
-        : Promise.resolve(null);
-
-    let clicked = false;
-    const directLink = page.locator('a[href*="grandarch.energymntr.com"]').first();
-    if ((await directLink.count()) > 0) {
-      await directLink.click();
-      clicked = true;
-    }
-
-    // ステップ5: 「L・eye 総合監視」カードの「開く」（表記ゆれ: スペースなし / 全角スペース）
-    if (!clicked) {
-      const cardByClass = page.locator(".service-card").filter({ hasText: /L・eye\s*総合監視/ }).first();
-      if ((await cardByClass.count()) > 0) {
-        try {
-          await cardByClass.getByRole("button", { name: "開く" }).click({ timeout: 12_000 });
-          clicked = true;
-        } catch {
-          /* fall through */
-        }
-      }
-    }
-    if (!clicked) {
-      try {
-        await page
-          .locator(".service-card")
-          .filter({ hasText: "L・eye" })
-          .filter({ hasText: "総合監視" })
-          .first()
-          .getByRole("button", { name: "開く" })
-          .click({ timeout: 12_000 });
-        clicked = true;
-      } catch {
-        /* fall through */
-      }
-    }
-    if (!clicked) {
-      try {
-        await page.locator("text=L・eye 総合監視").locator("..").locator('button:has-text("開く")').first().click({ timeout: 8000 });
-        clicked = true;
-      } catch {
-        /* fall through */
-      }
-    }
-    if (!clicked) {
-      clicked = await page.evaluate(() => {
-        const matchesEye = (text: string) =>
-          /L・eye\s*総合監視/.test(text) || (text.includes("L・eye") && text.includes("総合監視"));
-        const candidates = Array.from(document.querySelectorAll("a, button, .service-card, section, article, div"));
-        for (const el of candidates) {
-          if (!matchesEye(el.textContent ?? "")) continue;
-          const openBtn =
-            (el as HTMLElement).querySelector('button') ||
-            Array.from((el as HTMLElement).querySelectorAll("button")).find((b) =>
-              (b.textContent ?? "").trim().includes("開く")
-            );
-          if (openBtn) {
-            (openBtn as HTMLButtonElement).click();
-            return true;
-          }
-        }
-        const buttons = Array.from(document.querySelectorAll("button"));
-        for (const btn of buttons) {
-          const t = (btn.textContent ?? "").trim();
-          if (!t.includes("開く")) continue;
-          const card = btn.closest(".service-card, section, article, div");
-          if (card && matchesEye(card.textContent ?? "")) {
-            btn.click();
-            return true;
-          }
-        }
-        return false;
-      });
-    }
-
-    if (!clicked) {
-      const links = (await page
-        .$$eval("a, button", (els: Element[]) =>
-          els.map((e) => ({
-            tag: e.tagName,
-            text: (e.textContent ?? "").trim(),
-            href: e instanceof HTMLAnchorElement ? e.href : "",
-          }))
-        )
-        .catch(() => [])) as Array<{ tag: string; text: string; href: string }>;
-      console.log("servicelist links:", JSON.stringify(links));
-      throw new Error("ラプラス: サービス一覧で「L・eye総合監視」の開くボタンが見つかりません。");
-    }
-
-    const popup = await popupPromise;
-    const targetPage = popup ?? page;
-    if (targetPage === page) {
-      await page.waitForURL(/grandarch\.energymntr\.com/i, { timeout: 20000 }).catch(() => {});
-    } else if (typeof targetPage.waitForLoadState === "function") {
-      await targetPage.waitForLoadState("domcontentloaded", { timeout: 20000 }).catch(() => {});
-    }
-    return targetPage;
+  if (typeof page.context !== "function" || typeof page.waitForURL !== "function") {
+    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => {});
+    return page;
   }
 
-  await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+  const context = page.context();
+  let clicked = false;
+
+  const roots = collectPlaywrightRoots(page);
+
+  for (const root of roots) {
+    const direct = root.locator('a[href*="grandarch.energymntr.com"]').first();
+    if ((await direct.count().catch(() => 0)) > 0) {
+      const popupP = context.waitForEvent("page", { timeout: 35_000 }).catch(() => null);
+      const urlP = page.waitForURL(/grandarch\.energymntr\.com/i, { timeout: 35_000 }).catch(() => null);
+      try {
+        await direct.click({ timeout: 12_000 });
+      } catch {
+        await popupP.catch(() => null);
+        await urlP.catch(() => null);
+        continue;
+      }
+      const popup = await popupP;
+      await urlP.catch(() => null);
+      if (popup) {
+        await popup.waitForLoadState("domcontentloaded", { timeout: 25_000 }).catch(() => {});
+        clicked = true;
+        return popup as Page;
+      }
+      if (/grandarch\.energymntr\.com/i.test(page.url())) {
+        clicked = true;
+        return page;
+      }
+    }
+  }
+
+  const openRolePattern = /開く|起動|表示する|アクセス|リンク/;
+
+  for (const root of roots) {
+    const cardLocators = [
+      root.locator(".service-card, [class*='service-card'], [class*='ServiceCard']").filter({
+        hasText: /総合監視/,
+      }),
+      root.locator(".service-card").filter({ hasText: /L[・･\u30FB]?\s*eye|L-eye|L\.eye/i }),
+      root.locator("[class*='service']").filter({ hasText: /Grand\s*Arch|グランドアーチ|総合監視/i }),
+    ];
+    for (const cards of cardLocators) {
+      const n = await cards.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 12); i++) {
+        const card = cards.nth(i);
+        const txt = (await card.innerText().catch(() => "")) ?? "";
+        if (!textMatchesLeyeGrandMonitoringCard(txt)) continue;
+        const btn = card.getByRole("button", { name: openRolePattern }).first();
+        if ((await btn.count().catch(() => 0)) === 0) continue;
+        const popupP = context.waitForEvent("page", { timeout: 35_000 }).catch(() => null);
+        const urlP = page.waitForURL(/grandarch\.energymntr\.com/i, { timeout: 35_000 }).catch(() => null);
+        try {
+          await btn.click({ timeout: 12_000 });
+        } catch {
+          await popupP.catch(() => null);
+          await urlP.catch(() => null);
+          continue;
+        }
+        const popup = await popupP;
+        await urlP.catch(() => null);
+        if (popup) {
+          await popup.waitForLoadState("domcontentloaded", { timeout: 25_000 }).catch(() => {});
+          clicked = true;
+          return popup as Page;
+        }
+        if (/grandarch\.energymntr\.com/i.test(page.url())) {
+          clicked = true;
+          return page;
+        }
+      }
+    }
+  }
+
+  for (const root of roots) {
+    const fromEval = await root
+      .evaluate(() => {
+        const matchesCard = (text: string) => {
+          const t = text.normalize("NFKC").replace(/\s+/g, " ");
+          if (!t.trim()) return false;
+          const leye = /l\s*[・･\u30FB\uFF65.‐-]\s*eye/i.test(t) || /l\s*eye/i.test(t);
+          const monitoring = t.includes("総合監視");
+          const grandArch = /grand\s*arch/i.test(t) || t.includes("グランドアーチ");
+          return (leye && monitoring) || (grandArch && (monitoring || t.includes("監視")));
+        };
+        const matchesBtn = (text: string) => {
+          const s = text.normalize("NFKC").trim();
+          if (!s) return false;
+          return /^(開く|起動|表示する?|リンク|アクセス|OK|こちら)$/i.test(s) || s.includes("開く");
+        };
+        const findOpenControl = (rootEl: HTMLElement): HTMLElement | null => {
+          const buttons = Array.from(rootEl.querySelectorAll("button, a[role='button'], a.btn, a.button"));
+          for (const el of buttons) {
+            const label = (el.textContent ?? "").trim();
+            if (!matchesBtn(label)) continue;
+            const card = el.closest(
+              ".service-card, [class*='service-card'], [class*='ServiceCard'], section, article, div, li, tr"
+            );
+            if (card && matchesCard(card.textContent ?? "")) {
+              return el as HTMLElement;
+            }
+          }
+          return null;
+        };
+        const broad = Array.from(
+          document.querySelectorAll(
+            ".service-card, [class*='service-card'], [class*='ServiceCard'], section, article"
+          )
+        );
+        for (const el of broad) {
+          if (!matchesCard(el.textContent ?? "")) continue;
+          const btn =
+            (el as HTMLElement).querySelector("button, a[href*='grandarch'], a[href*='energymntr.com']") ||
+            Array.from((el as HTMLElement).querySelectorAll("button, a")).find((b) =>
+              matchesBtn((b.textContent ?? "").trim())
+            );
+          if (btn) {
+            (btn as HTMLElement).click();
+            return true;
+          }
+        }
+        for (const el of Array.from(document.querySelectorAll("a, button, div, section, article"))) {
+          if (!matchesCard(el.textContent ?? "")) continue;
+          const openBtn =
+            (el as HTMLElement).querySelector("button") ||
+            Array.from((el as HTMLElement).querySelectorAll("button, a")).find((b) =>
+              matchesBtn((b.textContent ?? "").trim())
+            );
+          if (openBtn) {
+            (openBtn as HTMLElement).click();
+            return true;
+          }
+        }
+        const byGrandHref = document.querySelector('a[href*="grandarch.energymntr.com"]') as HTMLElement | null;
+        if (byGrandHref) {
+          byGrandHref.click();
+          return true;
+        }
+        const ctrl = findOpenControl(document.body);
+        if (ctrl) {
+          ctrl.click();
+          return true;
+        }
+        return false;
+      })
+      .catch(() => false);
+    if (fromEval) {
+      clicked = true;
+      break;
+    }
+  }
+
+  if (clicked) {
+    const popupP = context.waitForEvent("page", { timeout: 20_000 }).catch(() => null);
+    const urlP = page.waitForURL(/grandarch\.energymntr\.com/i, { timeout: 20_000 }).catch(() => null);
+    await Promise.race([popupP, urlP]).catch(() => null);
+    const popup = await popupP;
+    if (popup) {
+      await popup.waitForLoadState("domcontentloaded", { timeout: 25_000 }).catch(() => {});
+      return popup as Page;
+    }
+    if (/grandarch\.energymntr\.com/i.test(page.url())) return page;
+  }
+
+  if (!clicked) {
+    logger.warn("laplaceCollector: servicelist open not found, trying direct grandarch URL", {
+      extra: { url: page.url() },
+    });
+    await page.goto(`${LAPLACE_DATA_BASE_URL}/`, { waitUntil: "domcontentloaded", timeout: 35_000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+    if (/grandarch\.energymntr\.com/i.test(page.url())) {
+      const needPw = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
+      if (!needPw) return page;
+    }
+  }
+
+  if (!clicked && !/grandarch\.energymntr\.com/i.test(page.url())) {
+    const links = (await page
+      .$$eval("a, button", (els: Element[]) =>
+        els.map((e) => ({
+          tag: e.tagName,
+          text: (e.textContent ?? "").trim().slice(0, 80),
+          href: e instanceof HTMLAnchorElement ? e.href : "",
+        }))
+      )
+      .catch(() => [])) as Array<{ tag: string; text: string; href: string }>;
+    logger.error("laplaceCollector: servicelist open failed; dump link texts", {
+      extra: { links: links.slice(0, 40) },
+    });
+    throw new Error(
+      "ラプラス: サービス一覧で Grand Arch（L・eye 総合監視）の起動ボタンが見つかりません。画面表記が変わった可能性があります。LAPLACE_DEBUG_HEADFUL=1 で表示を確認してください。"
+    );
+  }
+
+  if (/grandarch\.energymntr\.com/i.test(page.url())) {
+    await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => {});
+    return page;
+  }
+
+  await page.waitForURL(/grandarch\.energymntr\.com/i, { timeout: 25_000 }).catch(() => {});
   return page;
 }
 
@@ -695,9 +873,11 @@ async function parseAndUpsertLaplaceCsv(
   end: Date
 ): Promise<{ recordCount: number; errorCount: number }> {
   /** laplaceCode は CSV と突き合わせるため、監視システム種別に関係なく全 Site を対象にする */
-  const dbSites = await prisma.site.findMany({
-    select: { id: true, siteName: true, laplaceCode: true, monitoringSystem: true },
-  });
+  const dbSites = await withPrismaRetry(() =>
+    prisma.site.findMany({
+      select: { id: true, siteName: true, laplaceCode: true, monitoringSystem: true },
+    })
+  );
   const siteByLaplaceCode = new Map<string, (typeof dbSites)[number]>();
   for (const s of dbSites) {
     const code = s.laplaceCode ?? FALLBACK_LAPLACE_CODE_BY_SITE_NAME[s.siteName] ?? null;
@@ -840,20 +1020,22 @@ async function parseAndUpsertLaplaceCsv(
     }
     const generation = shouldForceZero(site.siteName, dateUtc, "laplace") ? 0 : parsedGeneration;
 
-    await prisma.dailyGeneration.upsert({
-      where: { siteId_date: { siteId: site.id, date: dateUtc } },
-      create: {
-        siteId: site.id,
-        date: dateUtc,
-        generation,
-        status: "laplace",
-      },
-      update: {
-        generation,
-        status: "laplace",
-        updatedAt: new Date(),
-      },
-    });
+    await withPrismaRetry(() =>
+      prisma.dailyGeneration.upsert({
+        where: { siteId_date: { siteId: site.id, date: dateUtc } },
+        create: {
+          siteId: site.id,
+          date: dateUtc,
+          generation,
+          status: "laplace",
+        },
+        update: {
+          generation,
+          status: "laplace",
+          updatedAt: new Date(),
+        },
+      })
+    );
     recordCount++;
   }
 
@@ -893,10 +1075,12 @@ export async function runLaplaceCollector(
     };
   }
 
-  const cred = await prisma.monitoringCredential.findFirst({
-    where: { userId, systemId: "grand-arch" },
-    select: { loginId: true, encryptedPassword: true },
-  });
+  const cred = await withPrismaRetry(() =>
+    prisma.monitoringCredential.findFirst({
+      where: { userId, systemId: "grand-arch" },
+      select: { loginId: true, encryptedPassword: true },
+    })
+  );
   if (!cred) {
     return {
       ok: false,
@@ -1042,7 +1226,7 @@ export async function runLaplaceCollector(
     }
 
     // CSVに日が存在しない場合でも、停止中サイトの強制0ルールを必ず反映する
-    await applyForcedZeroOverrides(prisma, start, end, "laplace");
+    await withPrismaRetry(() => applyForcedZeroOverrides(prisma, start, end, "laplace"));
 
     return {
       ok: true,

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { withPrismaRetry, PRISMA_RETRY_COLLECTOR } from "@/lib/withPrismaRetry";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
 import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
@@ -322,17 +323,25 @@ async function orderStationsByCoverage(
   const scored = await Promise.all(
     stations.map(async (station, idx) => {
       const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
-      const site = await prisma.site.findFirst({
-        where: { siteName: mappedName },
-        select: { id: true },
-      });
+      const site = await withPrismaRetry(
+        () =>
+          prisma.site.findFirst({
+            where: { siteName: mappedName },
+            select: { id: true },
+          }),
+        PRISMA_RETRY_COLLECTOR
+      );
       if (!site) return { station, idx, count: -1 };
-      const count = await prisma.dailyGeneration.count({
-        where: {
-          siteId: site.id,
-          date: { gte: start, lte: end },
-        },
-      });
+      const count = await withPrismaRetry(
+        () =>
+          prisma.dailyGeneration.count({
+            where: {
+              siteId: site.id,
+              date: { gte: start, lte: end },
+            },
+          }),
+        PRISMA_RETRY_COLLECTOR
+      );
       return { station, idx, count };
     })
   );
@@ -386,10 +395,14 @@ export async function runFusionSolarCollector(
     };
   }
 
-  const cred = await prisma.monitoringCredential.findFirst({
-    where: { userId, systemId: "fusion-solar" },
-    select: { loginId: true, encryptedPassword: true },
-  });
+  const cred = await withPrismaRetry(
+    () =>
+      prisma.monitoringCredential.findFirst({
+        where: { userId, systemId: "fusion-solar" },
+        select: { loginId: true, encryptedPassword: true },
+      }),
+    PRISMA_RETRY_COLLECTOR
+  );
   if (!cred) {
     return {
       ok: false,
@@ -793,10 +806,14 @@ export async function runFusionSolarCollector(
         consecutiveLoginLoopCount = 0;
 
         const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
-        const site = await prisma.site.findFirst({
-          where: { siteName: mappedName },
-          select: { id: true },
-        });
+        const site = await withPrismaRetry(
+          () =>
+            prisma.site.findFirst({
+              where: { siteName: mappedName },
+              select: { id: true },
+            }),
+          PRISMA_RETRY_COLLECTOR
+        );
         if (!site) {
           logger.warn("fusionSolarCollector: site not found", {
             extra: { plantName: station.name, mappedName },
@@ -832,22 +849,26 @@ export async function runFusionSolarCollector(
             errorCount++;
             continue;
           }
-          await prisma.dailyGeneration.upsert({
-            where: {
-              siteId_date: { siteId: site.id, date: dateUtc },
-            },
-            create: {
-              siteId: site.id,
-              date: dateUtc,
-              generation,
-              status: "fusion-solar",
-            },
-            update: {
-              generation,
-              status: "fusion-solar",
-              updatedAt: new Date(),
-            },
-          });
+          await withPrismaRetry(
+            () =>
+              prisma.dailyGeneration.upsert({
+                where: {
+                  siteId_date: { siteId: site.id, date: dateUtc },
+                },
+                create: {
+                  siteId: site.id,
+                  date: dateUtc,
+                  generation,
+                  status: "fusion-solar",
+                },
+                update: {
+                  generation,
+                  status: "fusion-solar",
+                  updatedAt: new Date(),
+                },
+              }),
+            PRISMA_RETRY_COLLECTOR
+          );
           recordCount++;
         }
       }
