@@ -3,6 +3,22 @@ import { autoLogin } from "@/lib/autoLogin";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
+/** Cookie 取得のみで直せそうな失敗ではないときは二重 Chromium（autoLogin）を避ける */
+function shouldAttemptAutoLoginAfterCookieFailure(message: string): boolean {
+  const m = message.toLowerCase();
+  if (/日付形式が不正/.test(message)) return false;
+  return (
+    /cookie|認証|ログイン|sunny\s*portal|session|セッション|未登録|期限切れ|formslogin|再登録|www\.sunnyportal/.test(
+      message
+    ) ||
+    /全発電所で取得に失敗/.test(message) ||
+    /target closed|browser has been closed|err_insufficient|insufficient_resources|detached frame/i.test(message) ||
+    m.includes("authentication") ||
+    m.includes("unauthorized") ||
+    m.includes("forbidden")
+  );
+}
+
 function parseYmdToUtcDate(ymd: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
   const [y, m, d] = ymd.split("-").map(Number);
@@ -19,10 +35,30 @@ export async function runSmaCollector(
   const end = parseYmdToUtcDate(endDate);
   if (!start || !end) return { ok: false, message: "日付形式が不正です", recordCount: 0, errorCount: 0 };
 
-  const hasFallbackCookie = await prisma.smaCookieCache.findFirst({
+  const cachedSession = await prisma.smaCookieCache.findFirst({
     where: { userId, expiresAt: { gt: new Date() } },
     select: { id: true },
   });
+
+  /**
+   * Vercel では autoLogin（Playwright）+ Cookie 収集（Puppeteer）の連続起動で
+   * ERR_INSUFFICIENT_RESOURCES / browser closed が出やすい。
+   * DB の SmaCookieCache が有効なら、まず Cookie のみで収集し、認証系の失敗時だけ autoLogin で更新する。
+   */
+  let cookieAttempt: Awaited<ReturnType<typeof runSmaCollectorCookie>> | null = null;
+  if (cachedSession) {
+    cookieAttempt = await runSmaCollectorCookie(userId, startDate, endDate);
+    if (cookieAttempt.ok) {
+      return cookieAttempt;
+    }
+    if (!shouldAttemptAutoLoginAfterCookieFailure(cookieAttempt.message)) {
+      return cookieAttempt;
+    }
+    logger.warn("smaCollector: cached cookie run failed; attempting autoLogin refresh", {
+      userId,
+      extra: { message: cookieAttempt.message },
+    });
+  }
 
   const loginResult = await autoLogin(userId, "sunny-portal", { headless: true });
   if (!loginResult.ok || !loginResult.storageStateJson) {
@@ -30,7 +66,7 @@ export async function runSmaCollector(
       userId,
       extra: { message: loginResult.message },
     });
-    if (!hasFallbackCookie) {
+    if (!cachedSession) {
       return {
         ok: false,
         message:
@@ -41,7 +77,15 @@ export async function runSmaCollector(
         errorCount: 0,
       };
     }
-    return await runSmaCollectorCookie(userId, startDate, endDate);
+    return {
+      ok: false,
+      message:
+        `SMA自動ログインに失敗しました。${loginResult.message}\n` +
+        `（Cookie のみでの取得: ${cookieAttempt?.message ?? "不明"}）\n` +
+        `/settings で Cookie 配列（JSON）の再登録、またはログイン ID・パスワードの保存を確認してください。`,
+      recordCount: cookieAttempt?.recordCount ?? 0,
+      errorCount: cookieAttempt?.errorCount ?? 0,
+    };
   }
 
   let runtimeStorageStateJson = "";
@@ -89,7 +133,7 @@ export async function runSmaCollector(
 
   if (!runtimeStorageStateJson || runtimeStorageStateJson === "[]") {
     logger.warn("smaCollector: no sunny portal cookies from autoLogin, falling back to saved cookie", { userId });
-    if (!hasFallbackCookie) {
+    if (!cachedSession) {
       return {
         ok: false,
         message:

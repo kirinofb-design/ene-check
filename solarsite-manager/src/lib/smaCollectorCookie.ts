@@ -405,12 +405,19 @@ async function extractTableRows(page: any): Promise<SmaTableCellRow[]> {
     }
   };
 
-  const mainRows = await tryCtx(page);
-  if (mainRows.length > 0) return mainRows;
+  for (let round = 0; round < 3; round++) {
+    const mainRows = await tryCtx(page);
+    if (mainRows.length > 0) return mainRows;
 
-  for (const frame of smaPageContexts(page).slice(1)) {
-    const frameRows = await tryCtx(frame);
-    if (frameRows.length > 0) return frameRows;
+    const frames = smaPageContexts(page).slice(1);
+    for (const frame of frames) {
+      const frameRows = await tryCtx(frame);
+      if (frameRows.length > 0) return frameRows;
+    }
+
+    if (round < 2) {
+      await smaDelay(700, 280);
+    }
   }
   return [];
 }
@@ -1339,7 +1346,15 @@ export async function runSmaCollectorCookie(
     executablePath?: string;
   } = {
     headless: isDebugHeadfulEnabled() ? false : true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-setuid-sandbox"],
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-setuid-sandbox",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--mute-audio",
+      "--disable-background-timer-throttling",
+    ],
     slowMo: isDebugHeadfulEnabled() ? 200 : 0,
     defaultViewport: isDebugHeadfulEnabled() ? null : undefined,
   };
@@ -1898,6 +1913,9 @@ export async function runSmaCollectorCookie(
   } finally {
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     await browser.close().catch(() => {});
+    if (isVercelRuntime()) {
+      await new Promise((r) => setTimeout(r, 1200));
+    }
   }
 }
 

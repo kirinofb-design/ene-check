@@ -9,6 +9,7 @@ function looksLikeTransientFailureMessage(message: string): boolean {
     m.includes("504") ||
     m.includes("502") ||
     m.includes("503") ||
+    m.includes("500") ||
     m.includes("gateway") ||
     m.includes("timeout") ||
     m.includes("timed out") ||
@@ -18,7 +19,17 @@ function looksLikeTransientFailureMessage(message: string): boolean {
     m.includes("database server") ||
     m.includes("p1001") ||
     m.includes("too many requests") ||
-    m.includes("rate limit")
+    m.includes("rate limit") ||
+    m.includes("browser has been closed") ||
+    m.includes("context or browser has been closed") ||
+    m.includes("target page, context or browser") ||
+    m.includes("execution context was destroyed") ||
+    m.includes("browsercontext.newpage") ||
+    m.includes("err_insufficient_resources") ||
+    m.includes("insufficient_resources") ||
+    m.includes("detached frame") ||
+    /ログインid入力欄が見つかりません/i.test(message) ||
+    /サーバ[ーー]?エラー/.test(message)
   );
 }
 
@@ -84,7 +95,12 @@ export async function fetchCollectPostJsonWithRetries(params: {
       if (!retryable || attempt >= maxAttempts) {
         return { res: lastRes, data: lastData };
       }
-      await sleep(1500 * attempt, params.signal);
+      const extra =
+        looksLikeTransientFailureMessage(msg) &&
+        (msg.toLowerCase().includes("browser") || msg.toLowerCase().includes("context"))
+          ? 2500
+          : 0;
+      await sleep(1500 * attempt + extra, params.signal);
     } catch (e) {
       if (isAbortError(e)) throw e;
       if (attempt >= maxAttempts) throw e;
@@ -144,7 +160,7 @@ export async function runFusionSolarDayWindowChunks(params: {
     }
 
     if (reqIndex > 0) {
-      await new Promise((r) => setTimeout(r, 650));
+      await new Promise((r) => setTimeout(r, 1100));
     }
     reqIndex++;
 
@@ -261,7 +277,7 @@ export async function runSmaDayChunks(params: {
     }
 
     if (reqIndex > 0) {
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, 4500));
     }
     reqIndex++;
 
@@ -272,7 +288,7 @@ export async function runSmaDayChunks(params: {
         url: params.smaPostUrl,
         body: { startDate: sl.startDate, endDate: sl.endDate },
         signal: params.signal,
-        maxAttempts: 4,
+        maxAttempts: 5,
       });
       res = out.res;
       data = out.data;
@@ -380,7 +396,7 @@ export async function runLaplaceDayChunks(params: {
     await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
     if (chunkIdx > 0) {
       // Vercel 連続起動で Chromium が閉じたり /tmp が枯渇しやすいため長めに空ける
-      await new Promise((r) => setTimeout(r, 6500));
+      await new Promise((r) => setTimeout(r, 8000));
     }
     chunkIdx++;
 
@@ -391,6 +407,7 @@ export async function runLaplaceDayChunks(params: {
         url: params.laplacePostUrl,
         body: { startDate: ch.startDate, endDate: ch.endDate },
         signal: params.signal,
+        maxAttempts: 5,
       });
       res = out.res;
       data = out.data;

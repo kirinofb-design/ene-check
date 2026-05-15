@@ -10,6 +10,33 @@ const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 const LAPLACE_DAY_CHUNK = 5;
 const SMA_DAY_CHUNK = 2;
 
+/** Vercel 上で Chromium を連続起動すると閉じる・枯減しやすいため、コレクター境界で空ける（ms） */
+const CHILL_AFTER_ECO_MS = 2800;
+const CHILL_AFTER_SMA_MS = 5500;
+const CHILL_AFTER_LAPLACE_MS = 4500;
+const CHILL_BEFORE_FUSION_MS = 3200;
+const CHILL_BETWEEN_SOLAR_MONITORS_MS = 2000;
+
+function sleepClientOrchestration(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function prewarmCollectChromium(signal: AbortSignal): Promise<void> {
+  await fetch(COLLECT_PREWARM_URL, { method: "POST", signal }).catch(() => {});
+}
+
 /** サーバ一括の allProgress と揃えた「データ取得」段階数（finalize は post-finalize で表示） */
 export const CLIENT_FULL_COLLECT_TOTAL_STEPS = 6;
 
@@ -65,7 +92,7 @@ export async function runClientFullCollectOrchestration(params: {
         url: endpoint,
         body: { startDate: range.startDate, endDate: range.endDate },
         signal,
-        maxAttempts: 4,
+        maxAttempts: 5,
       });
       response = out.res;
       data = out.data;
@@ -111,10 +138,23 @@ export async function runClientFullCollectOrchestration(params: {
     });
   };
 
+  const chill = async (ms: number) => {
+    if (interrupted || signal.aborted) return;
+    try {
+      await sleepClientOrchestration(ms, signal);
+    } catch {
+      interrupted = true;
+    }
+  };
+
   if (signal.aborted) interrupted = true;
   if (!interrupted && !signal.aborted) {
     notify(0, "eco-megane");
     await fetchOneSystemStep({ key: "eco-megane", button: "eco-megane" });
+  }
+  if (!interrupted && !signal.aborted) {
+    await chill(CHILL_AFTER_ECO_MS);
+    await prewarmCollectChromium(signal);
   }
   if (!interrupted && !signal.aborted) {
     notify(1, "sma");
@@ -131,6 +171,10 @@ export async function runClientFullCollectOrchestration(params: {
     });
     steps.push(sma.step);
     if (sma.flowAborted) interrupted = true;
+  }
+  if (!interrupted && !signal.aborted) {
+    await chill(CHILL_AFTER_SMA_MS);
+    await prewarmCollectChromium(signal);
   }
   if (!interrupted && !signal.aborted) {
     notify(2, "laplace");
@@ -150,12 +194,22 @@ export async function runClientFullCollectOrchestration(params: {
     if (lap.flowAborted) interrupted = true;
   }
   if (!interrupted && !signal.aborted) {
+    await chill(CHILL_AFTER_LAPLACE_MS);
+  }
+  if (!interrupted && !signal.aborted) {
     notify(3, "solar-monitor-sf");
     await fetchOneSystemStep({ key: "solar-monitor-sf", button: "池新田・本社" });
   }
   if (!interrupted && !signal.aborted) {
+    await chill(CHILL_BETWEEN_SOLAR_MONITORS_MS);
+  }
+  if (!interrupted && !signal.aborted) {
     notify(4, "solar-monitor-se");
     await fetchOneSystemStep({ key: "solar-monitor-se", button: "須山" });
+  }
+  if (!interrupted && !signal.aborted) {
+    await chill(CHILL_BEFORE_FUSION_MS);
+    await prewarmCollectChromium(signal);
   }
   if (!interrupted && !signal.aborted) {
     notify(5, "fusion-solar");
