@@ -153,7 +153,7 @@ export async function GET(request: Request) {
       : [];
 
     const siteById = new Map(sites.map((s) => [s.id, s]));
-    /** 日付キー → siteId → 発電量（欠測はキー無し。Excel では 0 と欠測を区別する） */
+    /** 日付キー → siteId → 発電量（DB に行がない日はキー無し → Excel では 0 を出力し集計可能にする） */
     const pivot = new Map<string, Record<string, number>>();
     for (const d of dates) {
       pivot.set(d, {});
@@ -177,8 +177,8 @@ export async function GET(request: Request) {
       row.push(systemLabel(site.monitoringSystem));
       for (const d of dates) {
         const cell = pivot.get(d)?.[site.id];
-        // 未取得（DB に行がない）と「実際の 0kWh」を区別する。従来は欠測も 0 表示だった。
-        row.push(cell === undefined ? "―" : cell);
+        // 未取得（DB に行がない）も実測 0kWh も集計上は 0 として扱う（停止中サイトの合算に支障を出さないため）。
+        row.push(cell === undefined ? 0 : cell);
       }
       aoa.push(row);
     }
