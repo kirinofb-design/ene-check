@@ -67,7 +67,20 @@ function looksLikeTransientCollectorError(message: string): boolean {
     m.includes("can't reach database") ||
     m.includes("p1001") ||
     m.includes("invalid prisma.") ||
-    m.includes("server has closed the connection")
+    m.includes("server has closed the connection") ||
+    m.includes("504") ||
+    m.includes("gateway") ||
+    m.includes("timeout") ||
+    m.includes("timed out") ||
+    m.includes("etimedout") ||
+    m.includes("econnreset") ||
+    m.includes("socket hang up") ||
+    m.includes("fetch failed") ||
+    m.includes("etxtbsy") ||
+    m.includes("spawn err") ||
+    m.includes("429") ||
+    m.includes("too many requests") ||
+    m.includes("rate limit")
   );
 }
 
@@ -81,6 +94,12 @@ function getCollectorRetryPolicy(key: string): { maxAttempts: number; waitMs: (a
     return {
       maxAttempts: 5,
       waitMs: (attempt) => (attempt < 3 ? 4000 : 8000),
+    };
+  }
+  if (key === "eco-megane") {
+    return {
+      maxAttempts: 4,
+      waitMs: (attempt) => (attempt === 1 ? 2000 : attempt === 2 ? 4500 : 7000),
     };
   }
   return {

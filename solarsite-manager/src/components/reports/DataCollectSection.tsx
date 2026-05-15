@@ -2,11 +2,18 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { defaultCollectDateRange } from "@/lib/reportDateDefaults";
-import { runFusionSolarDayWindowChunks, runLaplaceDayChunks } from "@/lib/browserChunkCollectors";
+import {
+  fetchCollectPostJsonWithRetries,
+  runFusionSolarDayWindowChunks,
+  runLaplaceDayChunks,
+  runSmaDayChunks,
+} from "@/lib/browserChunkCollectors";
 
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
-const LAPLACE_DAY_CHUNK = 2;
+/** ラプラス・SMA いずれも「1リクエスト短め」にして Hobby の約10秒制限を避ける */
+const LAPLACE_DAY_CHUNK = 3;
+const SMA_DAY_CHUNK = 3;
 
 export default function DataCollectSection() {
   const [range, setRange] = useState(() => defaultCollectDateRange());
@@ -19,8 +26,11 @@ export default function DataCollectSection() {
   const [runningKind, setRunningKind] = useState<string | null>(null);
   const [allCancelRequested, setAllCancelRequested] = useState(false);
   const [lockMessage, setLockMessage] = useState<string | null>(null);
+  const allCollectAbortRef = useRef<AbortController | null>(null);
+
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
+    FusionSolar: "/api/collect/fusion-solar",
     SMA: "/api/collect/sma",
     ラプラス: "/api/collect/laplace",
     "池新田・本社": "/api/collect/solar-monitor-sf",
@@ -84,7 +94,7 @@ export default function DataCollectSection() {
 
   const resolveApiMessage = (data: unknown, fallback: string, httpStatus?: number): string => {
     if (httpStatus === 504) {
-      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。FusionSolar・ラプラスはブラウザからの分割取得でも数分かかります。Vercel Hobby は関数あたり約10秒制限があり、重いシステム単体でもタイムアウトすることがあります（その場合は Pro プランで maxDuration を延ばすか、期間を短く分割してください）。";
+      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。SMA は最大3日ずつに分割して呼び出しますが、それでも超える場合はさらに期間を短くするか、Vercel Pro と maxDuration の延長を検討してください。FusionSolar・ラプラスも複数リクエストになります。";
     }
     if (data && typeof data === "object") {
       const d = data as {
@@ -100,8 +110,6 @@ export default function DataCollectSection() {
     }
     return fallback;
   };
-
-  const allCollectAbortRef = useRef<AbortController | null>(null);
 
   const handleCollect = async (systemName: string) => {
     if (systemName === "all" && allLocked) {
@@ -139,29 +147,29 @@ export default function DataCollectSection() {
             return;
           }
           let response: Response;
+          let data: unknown = null;
           try {
-            response = await fetch(endpoint, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                startDate: range.startDate,
-                endDate: range.endDate,
-              }),
+            const out = await fetchCollectPostJsonWithRetries({
+              url: endpoint,
+              body: { startDate: range.startDate, endDate: range.endDate },
               signal,
+              maxAttempts: 4,
             });
+            response = out.res;
+            data = out.data;
           } catch (e) {
             if (isAbortError(e)) {
               interrupted = true;
               return;
             }
-            throw e;
-          }
-          let data: unknown = null;
-          try {
-            data = await response.json();
-          } catch {
-            const text = await response.text().catch(() => "");
-            data = { message: text || null };
+            steps.push({
+              key: spec.key,
+              ok: false,
+              message: e instanceof Error ? e.message : String(e),
+              recordCount: 0,
+              errorCount: 0,
+            });
+            return;
           }
           const message = resolveApiMessage(
             data,
@@ -189,7 +197,19 @@ export default function DataCollectSection() {
             await fetchOneSystemStep({ key: "eco-megane", button: "eco-megane" });
           }
           if (!interrupted && !signal.aborted) {
-            await fetchOneSystemStep({ key: "sma", button: "SMA" });
+            const sma = await runSmaDayChunks({
+              rangeStart: range.startDate,
+              rangeEnd: range.endDate,
+              signal,
+              smaPostUrl: endpointBySystem.SMA,
+              resolveApiMessage,
+              onSetInterrupted: (v) => {
+                interrupted = v;
+              },
+              maxDaysPerChunk: SMA_DAY_CHUNK,
+            });
+            steps.push(sma.step);
+            if (sma.flowAborted) interrupted = true;
           }
           if (!interrupted && !signal.aborted) {
             const lap = await runLaplaceDayChunks({
@@ -230,39 +250,42 @@ export default function DataCollectSection() {
 
           let mirrorAppend = "";
           if (!interrupted && !signal.aborted) {
-            const fres = await fetch("/api/collect/all/finalize", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                startDate: range.startDate,
-                endDate: range.endDate,
-              }),
-              signal,
-            });
-            let fdata: unknown = null;
             try {
-              fdata = await fres.json();
-            } catch {
-              const text = await fres.text().catch(() => "");
-              fdata = { message: text || null };
-            }
-            if (!fres.ok || !fdata || typeof fdata !== "object" || !(fdata as { ok?: boolean }).ok) {
-              mirrorAppend = `\n\n──────── 後処理 ────────\n${resolveApiMessage(
-                fdata,
-                `後処理 API が失敗しました（HTTP ${fres.status}）`,
-                fres.status
-              )}`;
-            } else {
-              const ms = (fdata as { mirrorSync?: unknown }).mirrorSync;
-              if (ms && typeof ms === "object") {
-                const m = ms as { ok?: boolean; upserted?: number; skippedNoMirrorSite?: number; message?: string };
-                mirrorAppend = `\n\n──────── ミラーDB同期 ────────\n${
-                  m.ok
-                    ? `成功（反映 ${Number(m.upserted ?? 0)} 件 / ミラー側に無いサイトでスキップ ${Number(
-                        m.skippedNoMirrorSite ?? 0
-                      )} 件）`
-                    : `失敗: ${String(m.message ?? "不明なエラー")}`
-                }`;
+              const { res: fres, data: fdata } = await fetchCollectPostJsonWithRetries({
+                url: "/api/collect/all/finalize",
+                body: { startDate: range.startDate, endDate: range.endDate },
+                signal,
+                maxAttempts: 4,
+              });
+              if (!fres.ok || !fdata || typeof fdata !== "object" || !(fdata as { ok?: boolean }).ok) {
+                mirrorAppend = `\n\n──────── 後処理 ────────\n${resolveApiMessage(
+                  fdata,
+                  `後処理 API が失敗しました（HTTP ${fres.status}）`,
+                  fres.status
+                )}`;
+              } else {
+                const ms = (fdata as { mirrorSync?: unknown }).mirrorSync;
+                if (ms && typeof ms === "object") {
+                  const m = ms as { ok?: boolean; upserted?: number; skippedNoMirrorSite?: number; message?: string };
+                  mirrorAppend = `\n\n──────── ミラーDB同期 ────────\n${
+                    m.ok
+                      ? `成功（反映 ${Number(m.upserted ?? 0)} 件 / ミラー側に無いサイトでスキップ ${Number(
+                          m.skippedNoMirrorSite ?? 0
+                        )} 件）`
+                      : `失敗: ${String(m.message ?? "不明なエラー")}`
+                  }`;
+                }
+              }
+            } catch (fe) {
+              if (
+                (fe instanceof DOMException && fe.name === "AbortError") ||
+                (fe instanceof Error && fe.name === "AbortError")
+              ) {
+                interrupted = true;
+                mirrorAppend =
+                  "\n\n──────── 後処理 ────────\n中断のため、強制0ルール適用とミラー同期は実行していません。";
+              } else {
+                mirrorAppend = `\n\n──────── 後処理 ────────\n${fe instanceof Error ? fe.message : String(fe)}`;
               }
             }
           } else {
@@ -296,6 +319,26 @@ export default function DataCollectSection() {
           }
         } finally {
           allCollectAbortRef.current = null;
+        }
+        return;
+      }
+
+      if (systemName === "SMA") {
+        const noop = () => {};
+        const { step } = await runSmaDayChunks({
+          rangeStart: range.startDate,
+          rangeEnd: range.endDate,
+          signal: new AbortController().signal,
+          smaPostUrl: endpointBySystem.SMA,
+          resolveApiMessage,
+          onSetInterrupted: noop,
+          maxDaysPerChunk: SMA_DAY_CHUNK,
+        });
+        const detail = `（保存 ${step.recordCount} 件 / スキップ ${step.errorCount} 件）`;
+        if (step.ok) {
+          alert(`SMA: ${step.message}\n${detail}`);
+        } else {
+          alert(`SMAのエラー:\n${step.message}\n${detail}`);
         }
         return;
       }
@@ -345,27 +388,21 @@ export default function DataCollectSection() {
         alert(`${systemName}の収集先が未定義です。`);
         return;
       }
+      const indivSignal = new AbortController().signal;
       let response: Response;
+      let data: unknown = null;
       try {
-        response = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            startDate: range.startDate,
-            endDate: range.endDate,
-            system: systemName,
-          }),
+        const out = await fetchCollectPostJsonWithRetries({
+          url: endpoint,
+          body: { startDate: range.startDate, endDate: range.endDate, system: systemName },
+          signal: indivSignal,
+          maxAttempts: 4,
         });
+        response = out.res;
+        data = out.data;
       } catch {
         alert(`${systemName}の通信に失敗しました`);
         return;
-      }
-      let data: unknown = null;
-      try {
-        data = await response.json();
-      } catch {
-        const text = await response.text().catch(() => "");
-        data = { message: text || null };
       }
 
       const message = resolveApiMessage(
@@ -634,9 +671,9 @@ export default function DataCollectSection() {
             </button>
           </div>
           <p style={{ fontSize: "11px", color: "#64748b", marginTop: "10px", lineHeight: 1.5, marginBottom: 0 }}>
-            「全データ一括取得」はブラウザから API
-            を順に呼び出します。FusionSolar は「1日＝全発電所」をサーバでまとめ取得し、期間は日ごとに複数回呼び出します。ラプラスは最大{LAPLACE_DAY_CHUNK}
-            日ずつに分割して呼び出します（リクエスト数が増えるため完了まで時間がかかります）。
+            「全データ一括取得」はタイムアウトを避けるため、SMA は最大{SMA_DAY_CHUNK}
+            日ずつ、FusionSolar は1日単位の窓 API、ラプラスは最大{LAPLACE_DAY_CHUNK}
+            日ずつに分割して呼び出し、その他は通常の収集 API、最後に後処理・ミラー同期（finalize）を1回実行します。完了まで時間がかかります。実行取消は通信中断とサーバへの取消通知を行います。
           </p>
           {allLocked && lockMessage ? (
             <p style={{ fontSize: '11px', color: '#334155', marginTop: '6px', lineHeight: 1.5, marginBottom: 0 }}>

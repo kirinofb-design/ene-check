@@ -249,13 +249,14 @@ async function configureLaplaceDownloadForm(page: Page, yearMonth: string): Prom
 
 async function loginLaplace(page: any, loginId: string, password: string) {
   // ステップ3: 利用規約アラート等の window.alert — page.goto() より前に登録
-  page.on("dialog", async (dialog: { message(): string; accept(): Promise<void> }) => {
+  page.once("dialog", async (dialog: { message(): string; accept(): Promise<void> }) => {
     logger.info("laplaceCollector: dialog", { extra: { message: dialog.message() } });
     await dialog.accept().catch(() => {});
   });
 
   await page.goto(LAPLACE_LOGIN_URL, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+  await page.waitForTimeout(1200);
 
   // page + iframe を横断してログインUIを探索する
   const getRoots = (): any[] => {
@@ -334,7 +335,7 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     return false;
   };
 
-  const maxWaitMs = 25_000;
+  const maxWaitMs = 40_000;
   const started = Date.now();
 
   let idOk = false;
@@ -1053,7 +1054,8 @@ export async function runLaplaceCollector(
       msg.includes("ERR_INSUFFICIENT_RESOURCES") ||
       msg.includes("Execution context was destroyed") ||
       msg.includes("Target page, context or browser has been closed") ||
-      msg.includes("ログイン後もログイン画面のまま")
+      msg.includes("ログイン後もログイン画面のまま") ||
+      msg.includes("ログインID入力欄が見つかりません")
     );
   };
   const start = parseYmdToUtcDate(startDate);
