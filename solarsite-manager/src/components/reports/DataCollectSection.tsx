@@ -10,7 +10,10 @@ import {
 } from "@/lib/browserChunkCollectors";
 import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
 import { shouldUseClientChunkedFullCollect } from "@/lib/collectAllClientStrategy";
-import { runClientFullCollectOrchestration } from "@/lib/runClientFullCollectOrchestration";
+import {
+  runClientFullCollectOrchestration,
+  type ClientAllCollectProgress,
+} from "@/lib/runClientFullCollectOrchestration";
 
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
@@ -41,6 +44,7 @@ export default function DataCollectSection() {
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const allCollectAbortRef = useRef<AbortController | null>(null);
   const allClientOrchestrationActiveRef = useRef(false);
+  const clientAllProgressForUiRef = useRef<ClientAllCollectProgress | null>(null);
 
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
@@ -125,6 +129,15 @@ export default function DataCollectSection() {
     return fallback;
   };
 
+  const formatClientOrchestrationLockMessage = (p: ClientAllCollectProgress, parallel: string) => {
+    const label =
+      p.currentStepKey === "post-finalize"
+        ? "後処理・ミラー同期"
+        : collectorStepLabel[p.currentStepKey] ?? p.currentStepKey;
+    const line = `実行中（排他ロック中）です。完了してから再実行してください。（進捗 ${p.completedSteps}/${p.totalSteps}・実行中: ${label}）`;
+    return parallel ? `${line}${parallel}` : line;
+  };
+
   const handleCollect = async (systemName: string) => {
     if (systemName === "all" && allLocked) {
       alert(lockMessage ?? "実行中（排他ロック中）です。完了してから再実行してください。");
@@ -136,6 +149,9 @@ export default function DataCollectSection() {
         const useChunked = shouldUseClientChunkedFullCollect();
         if (useChunked) {
           allClientOrchestrationActiveRef.current = true;
+          clientAllProgressForUiRef.current = null;
+          setAllLocked(true);
+          setRunningKind("all");
           const signal = (() => {
             const c = new AbortController();
             allCollectAbortRef.current = c;
@@ -147,6 +163,12 @@ export default function DataCollectSection() {
               signal,
               endpointBySystem,
               resolveApiMessage,
+              onProgress: (p) => {
+                clientAllProgressForUiRef.current = p;
+                setAllLocked(true);
+                setRunningKind("all");
+                setLockMessage(formatClientOrchestrationLockMessage(p, ""));
+              },
             });
             const recordCount = steps.reduce((s, x) => s + x.recordCount, 0);
             const errorCount = steps.reduce((s, x) => s + x.errorCount, 0);
@@ -169,6 +191,7 @@ export default function DataCollectSection() {
             }
           } finally {
             allClientOrchestrationActiveRef.current = false;
+            clientAllProgressForUiRef.current = null;
             allCollectAbortRef.current = null;
           }
           return;
@@ -421,9 +444,14 @@ export default function DataCollectSection() {
               serverRunning && typeof data?.message === "string" && data.message.trim().length > 0
                 ? `\n\n※${data.message}`
                 : "";
-            setLockMessage(
-              `全データ一括取得を実行中です（ブラウザ分割モード）。各システムの API を順に呼び出しており、完了まで数分かかることがあります。この間は画面を閉じずにお待ちください。${parallel}`
-            );
+            const p = clientAllProgressForUiRef.current;
+            if (p) {
+              setLockMessage(formatClientOrchestrationLockMessage(p, parallel));
+            } else {
+              setLockMessage(
+                `実行中（排他ロック中）です。完了してから再実行してください。（開始準備中…）${parallel}`
+              );
+            }
           }
           scheduleNext(RUNNING_POLL_MS);
           return;

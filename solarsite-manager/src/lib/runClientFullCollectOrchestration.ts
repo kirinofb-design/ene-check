@@ -10,6 +10,15 @@ const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 const LAPLACE_DAY_CHUNK = 5;
 const SMA_DAY_CHUNK = 2;
 
+/** サーバ一括の allProgress と揃えた「データ取得」段階数（finalize は post-finalize で表示） */
+export const CLIENT_FULL_COLLECT_TOTAL_STEPS = 6;
+
+export type ClientAllCollectProgress = {
+  completedSteps: number;
+  totalSteps: number;
+  currentStepKey: string;
+};
+
 export type ClientAllCollectStep = {
   key: string;
   ok: boolean;
@@ -27,8 +36,9 @@ export async function runClientFullCollectOrchestration(params: {
   signal: AbortSignal;
   endpointBySystem: Record<string, string>;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
+  onProgress?: (p: ClientAllCollectProgress) => void;
 }): Promise<{ steps: ClientAllCollectStep[]; interrupted: boolean; mirrorAppend: string }> {
-  const { range, signal, endpointBySystem, resolveApiMessage } = params;
+  const { range, signal, endpointBySystem, resolveApiMessage, onProgress } = params;
   const steps: ClientAllCollectStep[] = [];
   let interrupted = false;
 
@@ -93,11 +103,21 @@ export async function runClientFullCollectOrchestration(params: {
     });
   };
 
+  const notify = (completedSteps: number, currentStepKey: string) => {
+    onProgress?.({
+      completedSteps,
+      totalSteps: CLIENT_FULL_COLLECT_TOTAL_STEPS,
+      currentStepKey,
+    });
+  };
+
   if (signal.aborted) interrupted = true;
   if (!interrupted && !signal.aborted) {
+    notify(0, "eco-megane");
     await fetchOneSystemStep({ key: "eco-megane", button: "eco-megane" });
   }
   if (!interrupted && !signal.aborted) {
+    notify(1, "sma");
     const sma = await runSmaDayChunks({
       rangeStart: range.startDate,
       rangeEnd: range.endDate,
@@ -113,6 +133,7 @@ export async function runClientFullCollectOrchestration(params: {
     if (sma.flowAborted) interrupted = true;
   }
   if (!interrupted && !signal.aborted) {
+    notify(2, "laplace");
     const lap = await runLaplaceDayChunks({
       rangeStart: range.startDate,
       rangeEnd: range.endDate,
@@ -129,12 +150,15 @@ export async function runClientFullCollectOrchestration(params: {
     if (lap.flowAborted) interrupted = true;
   }
   if (!interrupted && !signal.aborted) {
+    notify(3, "solar-monitor-sf");
     await fetchOneSystemStep({ key: "solar-monitor-sf", button: "池新田・本社" });
   }
   if (!interrupted && !signal.aborted) {
+    notify(4, "solar-monitor-se");
     await fetchOneSystemStep({ key: "solar-monitor-se", button: "須山" });
   }
   if (!interrupted && !signal.aborted) {
+    notify(5, "fusion-solar");
     const fus = await runFusionSolarDayWindowChunks({
       rangeStart: range.startDate,
       rangeEnd: range.endDate,
@@ -151,6 +175,7 @@ export async function runClientFullCollectOrchestration(params: {
 
   let mirrorAppend = "";
   if (!interrupted && !signal.aborted) {
+    notify(6, "post-finalize");
     try {
       const { res: fres, data: fdata } = await fetchCollectPostJsonWithRetries({
         url: "/api/collect/all/finalize",
