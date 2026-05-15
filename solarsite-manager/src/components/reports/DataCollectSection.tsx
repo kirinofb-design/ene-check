@@ -9,6 +9,8 @@ import {
   runSmaDayChunks,
 } from "@/lib/browserChunkCollectors";
 import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
+import { shouldUseClientChunkedFullCollect } from "@/lib/collectAllClientStrategy";
+import { runClientFullCollectOrchestration } from "@/lib/runClientFullCollectOrchestration";
 
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
@@ -38,6 +40,7 @@ export default function DataCollectSection() {
   const [allCancelRequested, setAllCancelRequested] = useState(false);
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const allCollectAbortRef = useRef<AbortController | null>(null);
+  const allClientOrchestrationActiveRef = useRef(false);
 
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
@@ -105,7 +108,7 @@ export default function DataCollectSection() {
 
   const resolveApiMessage = (data: unknown, fallback: string, httpStatus?: number): string => {
     if (httpStatus === 504) {
-      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。全データ一括取得はサーバが全システムを順に処理します。Vercel 本番では COLLECT_FANOUT_SECRET を設定すると内部でシステム別 API に分かれやすくなります。期間を短くするか、実行時間上限の延長も検討してください。個別ボタンの SMA・FusionSolar・ラプラスは引き続きブラウザから分割呼び出しします。";
+      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。Vercel の .vercel.app では「全データ一括取得」が自動的にブラウザ分割モードになります（この文言はサーバ一括のみのときに出ます）。カスタムドメインでサーバ一括を使う場合は COLLECT_FANOUT_SECRET・maxDuration・取得期間の短縮を検討してください。開発（localhost）と本番では DATABASE_URL が異なるため DB は一致しません（DATABASE_MIRROR_URL は任意です）。";
     }
     if (data && typeof data === "object") {
       const d = data as {
@@ -130,6 +133,47 @@ export default function DataCollectSection() {
     setLoading(systemName);
     try {
       if (systemName === "all") {
+        const useChunked = shouldUseClientChunkedFullCollect();
+        if (useChunked) {
+          allClientOrchestrationActiveRef.current = true;
+          const signal = (() => {
+            const c = new AbortController();
+            allCollectAbortRef.current = c;
+            return c.signal;
+          })();
+          try {
+            const { steps, interrupted, mirrorAppend } = await runClientFullCollectOrchestration({
+              range,
+              signal,
+              endpointBySystem,
+              resolveApiMessage,
+            });
+            const recordCount = steps.reduce((s, x) => s + x.recordCount, 0);
+            const errorCount = steps.reduce((s, x) => s + x.errorCount, 0);
+            const allOk = steps.length > 0 && steps.every((s) => s.ok);
+            const statusWord = interrupted ? "中断" : allOk ? "完了" : "一部失敗";
+            const head = interrupted
+              ? `一括取得が中断されました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`
+              : `全コレクター実行が${statusWord}しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`;
+            alert(formatAllCollectResult({ message: head, steps }) + mirrorAppend);
+          } catch (e) {
+            const aborted =
+              (e instanceof DOMException && e.name === "AbortError") ||
+              (e instanceof Error && e.name === "AbortError");
+            if (aborted) {
+              alert(
+                "一括取得を中断しました（通信を切断しました）。分割取得中に保存済みのシステム分は DB に残っています。"
+              );
+            } else {
+              alert(`allの通信に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          } finally {
+            allClientOrchestrationActiveRef.current = false;
+            allCollectAbortRef.current = null;
+          }
+          return;
+        }
+
         const signal = (() => {
           const c = new AbortController();
           allCollectAbortRef.current = c;
@@ -364,6 +408,26 @@ export default function DataCollectSection() {
           } | null;
         };
         if (cancelled) return;
+        if (allClientOrchestrationActiveRef.current) {
+          const serverRunning = !!data?.allRunning || !!data?.singleRunning;
+          const cancelRequested = !!data?.allCancelRequested;
+          setAllCancelRequested(cancelRequested);
+          setAllLocked(true);
+          setRunningKind("all");
+          if (cancelRequested && typeof data?.message === "string" && data.message.trim().length > 0) {
+            setLockMessage(data.message);
+          } else {
+            const parallel =
+              serverRunning && typeof data?.message === "string" && data.message.trim().length > 0
+                ? `\n\n※${data.message}`
+                : "";
+            setLockMessage(
+              `全データ一括取得を実行中です（ブラウザ分割モード）。各システムの API を順に呼び出しており、完了まで数分かかることがあります。この間は画面を閉じずにお待ちください。${parallel}`
+            );
+          }
+          scheduleNext(RUNNING_POLL_MS);
+          return;
+        }
         const running = !!data?.allRunning || !!data?.singleRunning;
         const cancelRequested = !!data?.allCancelRequested;
         setAllLocked(running);
