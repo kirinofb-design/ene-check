@@ -27,6 +27,7 @@ export default function DataCollectSection() {
   const [allCancelRequested, setAllCancelRequested] = useState(false);
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const allCollectAbortRef = useRef<AbortController | null>(null);
+  const allClientOrchestrationActiveRef = useRef(false);
 
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
@@ -119,6 +120,7 @@ export default function DataCollectSection() {
     setLoading(systemName);
     try {
       if (systemName === "all") {
+        allClientOrchestrationActiveRef.current = true;
         const signal = (() => {
           const c = new AbortController();
           allCollectAbortRef.current = c;
@@ -318,6 +320,7 @@ export default function DataCollectSection() {
             alert(`allの通信に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
           }
         } finally {
+          allClientOrchestrationActiveRef.current = false;
           allCollectAbortRef.current = null;
         }
         return;
@@ -489,6 +492,26 @@ export default function DataCollectSection() {
           } | null;
         };
         if (cancelled) return;
+        if (allClientOrchestrationActiveRef.current) {
+          const serverRunning = !!data?.allRunning || !!data?.singleRunning;
+          const cancelRequested = !!data?.allCancelRequested;
+          setAllCancelRequested(cancelRequested);
+          setAllLocked(true);
+          setRunningKind("all");
+          if (cancelRequested && typeof data?.message === "string" && data.message.trim().length > 0) {
+            setLockMessage(data.message);
+          } else {
+            const parallel =
+              serverRunning && typeof data?.message === "string" && data.message.trim().length > 0
+                ? `\n\n※${data.message}`
+                : "";
+            setLockMessage(
+              `全データ一括取得を実行中です。ブラウザから各システムの収集 API を順に呼び出しており、完了まで数分〜十数分かかることがあります。この間は画面を閉じずにお待ちください。${parallel}`
+            );
+          }
+          scheduleNext(RUNNING_POLL_MS);
+          return;
+        }
         const running = !!data?.allRunning || !!data?.singleRunning;
         const cancelRequested = !!data?.allCancelRequested;
         setAllLocked(running);
