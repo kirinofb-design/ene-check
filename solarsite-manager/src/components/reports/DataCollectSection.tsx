@@ -8,12 +8,23 @@ import {
   runLaplaceDayChunks,
   runSmaDayChunks,
 } from "@/lib/browserChunkCollectors";
+import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
 
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 /** ラプラス・SMA いずれも「1リクエスト短め」にして Hobby の約10秒制限を避ける */
 const LAPLACE_DAY_CHUNK = 5;
 const SMA_DAY_CHUNK = 2;
+
+const reportsCardFooterShell: React.CSSProperties = {
+  borderTop: "1px solid #f1f5f9",
+  paddingTop: 4,
+  marginTop: "auto",
+  minHeight: REPORTS_CARD_FOOTER_MIN_HEIGHT_PX,
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "flex-start",
+};
 
 export default function DataCollectSection() {
   const [range, setRange] = useState(() => defaultCollectDateRange());
@@ -511,7 +522,7 @@ export default function DataCollectSection() {
           </div>
         </div>
 
-        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto' }}>
+        <div style={reportsCardFooterShell}>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <button 
               style={mainBtnStyle}

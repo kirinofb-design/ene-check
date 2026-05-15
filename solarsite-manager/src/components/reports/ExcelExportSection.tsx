@@ -2,6 +2,17 @@
 
 import React, { useEffect, useState } from "react";
 import { defaultExcelMonth } from "@/lib/reportDateDefaults";
+import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
+
+const reportsCardFooterShell: React.CSSProperties = {
+  borderTop: "1px solid #f1f5f9",
+  paddingTop: 4,
+  marginTop: "auto",
+  minHeight: REPORTS_CARD_FOOTER_MIN_HEIGHT_PX,
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "flex-start",
+};
 
 export default function ExcelExportSection() {
   const [targetMonth, setTargetMonth] = useState(() => defaultExcelMonth());
@@ -129,7 +140,7 @@ export default function ExcelExportSection() {
           />
         </div>
 
-        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto' }}>
+        <div style={reportsCardFooterShell}>
           <button
             style={excelBtnStyle}
             onClick={() => void handleDownload()}
