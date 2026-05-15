@@ -48,7 +48,7 @@ function normalizeFusionTableDateCell(raw: string): string | null {
     .trim()
     .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
     .replace(/\u3000/g, " ");
-  const slash = ascii.replace(/-/g, "/");
+  const slash = ascii.replace(/-/g, "/").replace(/\s/g, "");
   const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(slash);
   if (!m) return null;
   const y = Number(m[1]);
@@ -56,6 +56,70 @@ function normalizeFusionTableDateCell(raw: string): string | null {
   const d = Number(m[3]);
   if (!y || !mo || !d) return null;
   return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/** PCS 列のセル文字列が数値 kWh として解釈できるか（空・ダッシュ類は false） */
+function isFusionPcsCellText(s: string): boolean {
+  const t = s.trim().replace(/,/g, "").replace(/\s/g, "");
+  if (!t) return false;
+  if (/^[―\-－ー]+$/.test(t)) return false;
+  return /^-?\d+(\.\d+)?$/.test(t);
+}
+
+/** thead から日付列・PCS 列のインデックスを推定（取りこぼし対策）。失敗時は従来の 0 / 2。 */
+async function detectFusionReportColumnIndices(page: Page): Promise<{ dateIdx: number; pcsIdx: number }> {
+  return page.evaluate(() => {
+    const fallback = { dateIdx: 0, pcsIdx: 2 };
+    const theadRows = Array.from(document.querySelectorAll("table thead tr"));
+    if (!theadRows.length) return fallback;
+    const thRow = theadRows[theadRows.length - 1];
+    const ths = Array.from(thRow.querySelectorAll("th"));
+    if (!ths.length) return fallback;
+    let dateIdx = 0;
+    let pcsIdx = 2;
+    for (let i = 0; i < ths.length; i++) {
+      const raw = (ths[i].textContent ?? "").replace(/\s+/g, " ").trim();
+      const lc = raw.toLowerCase();
+      if (/日期|日付|data\s*date|date\b/i.test(raw)) dateIdx = i;
+      if (lc.includes("pcs") || /pcs累計|pcs累计|pcs発電/i.test(raw)) pcsIdx = i;
+    }
+    if (pcsIdx >= ths.length) pcsIdx = Math.min(2, ths.length - 1);
+    if (dateIdx >= ths.length) dateIdx = 0;
+    if (pcsIdx === dateIdx) pcsIdx = Math.min(ths.length - 1, dateIdx + 2);
+    return { dateIdx, pcsIdx };
+  });
+}
+
+/**
+ * ページネーション等で同一日が複数行になるとき、空 PCS の行が後から来て上書きされないよう正規化日付でマージする。
+ */
+function dedupeFusionRowsPreferringNonEmptyPcs(
+  rows: Array<{ dateStr: string; pcsKwhText: string }>
+): Array<{ dateStr: string; pcsKwhText: string }> {
+  const map = new Map<string, { dateStr: string; pcsKwhText: string }>();
+  for (const row of rows) {
+    const ymd =
+      normalizeFusionTableDateCell(row.dateStr) ??
+      (() => {
+        const t = row.dateStr.replace(/\//g, "-").trim();
+        return isYmd(t) ? t : null;
+      })();
+    if (!ymd) continue;
+    const prev = map.get(ymd);
+    if (!prev) {
+      map.set(ymd, row);
+      continue;
+    }
+    const prevOk = isFusionPcsCellText(prev.pcsKwhText);
+    const curOk = isFusionPcsCellText(row.pcsKwhText);
+    if (!prevOk && curOk) map.set(ymd, row);
+    else if (prevOk && !curOk) {
+      /* keep prev */
+    } else {
+      map.set(ymd, row);
+    }
+  }
+  return [...map.values()];
 }
 
 /** startDate〜endDate に含まれる年月（YYYY-MM）の配列を返す */
@@ -667,19 +731,68 @@ export async function runFusionSolarCollector(
             await page.waitForSelector("table tbody tr", { timeout: 20_000 }).catch(() => {});
             await page.waitForTimeout(800);
 
+            const { dateIdx, pcsIdx } = await detectFusionReportColumnIndices(page);
+            logger.info("fusionSolarCollector: report table columns", {
+              userId,
+              extra: { station: station.name, yearMonth, dateIdx, pcsIdx },
+            });
+
             // ページネーション対応: 日付範囲外になったら早期打ち切りして高速化する
             const rows: { dateStr: string; pcsKwhText: string }[] = [];
             let pageCount = 0;
             while (true) {
               throwIfAllCollectCancelled(userId);
               pageCount += 1;
-              const pageRows = await page.$$eval("table tbody tr", (trs) =>
-                trs.map((tr) => {
-                  const tds = Array.from(tr.querySelectorAll("td"));
-                  const dateStr = (tds[0]?.textContent ?? "").trim();
-                  const pcsKwhText = (tds[2]?.textContent ?? "").trim();
-                  return { dateStr, pcsKwhText };
-                })
+              const pageRows = await page.$$eval(
+                "table tbody tr",
+                (trs, cols: { dateIdx: number; pcsIdx: number }) => {
+                  function normDate(raw: string): string | null {
+                    const ascii = raw
+                      .trim()
+                      .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+                      .replace(/\u3000/g, " ");
+                    const slash = ascii.replace(/-/g, "/").replace(/\s/g, "");
+                    const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(slash);
+                    if (!m) return null;
+                    const y = Number(m[1]);
+                    const mo = Number(m[2]);
+                    const d = Number(m[3]);
+                    if (!y || !mo || !d) return null;
+                    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+                  }
+                  function isPcsLike(s: string): boolean {
+                    const t = (s ?? "").trim().replace(/,/g, "").replace(/\s/g, "");
+                    if (!t) return false;
+                    if (/^[―\-－ー]+$/.test(t)) return false;
+                    return /^-?\d+(\.\d+)?$/.test(t);
+                  }
+                  const { dateIdx: diHint, pcsIdx: piHint } = cols;
+                  return trs.map((tr) => {
+                    const texts = Array.from(tr.querySelectorAll("td")).map((td) => (td.textContent ?? "").trim());
+                    let di = -1;
+                    for (let i = 0; i < texts.length; i++) {
+                      if (normDate(texts[i])) {
+                        di = i;
+                        break;
+                      }
+                    }
+                    if (di < 0 && diHint < texts.length && normDate(texts[diHint])) di = diHint;
+                    if (di < 0) return { dateStr: "", pcsKwhText: "" };
+                    const dateStr = texts[di];
+                    let pcsKwhText = (texts[piHint] ?? "").trim();
+                    if (!isPcsLike(pcsKwhText)) {
+                      pcsKwhText = "";
+                      for (let j = di + 1; j < texts.length; j++) {
+                        if (isPcsLike(texts[j])) {
+                          pcsKwhText = texts[j];
+                          break;
+                        }
+                      }
+                    }
+                    return { dateStr, pcsKwhText };
+                  });
+                },
+                { dateIdx, pcsIdx }
               );
               for (const r of pageRows) {
                 const ymd =
@@ -796,6 +909,8 @@ export async function runFusionSolarCollector(
         }
         consecutiveLoginLoopCount = 0;
 
+        allRows = dedupeFusionRowsPreferringNonEmptyPcs(allRows);
+
         const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
         const site = await withPrismaRetry(
           () =>
@@ -817,7 +932,13 @@ export async function runFusionSolarCollector(
         for (const row of allRows) {
           throwIfAllCollectCancelled(userId);
           const { dateStr, pcsKwhText } = row;
-          if (!dateStr || !pcsKwhText) {
+          if (!dateStr || !isFusionPcsCellText(pcsKwhText)) {
+            if (dateStr.trim()) {
+              logger.warn("fusionSolarCollector: skip row (missing date or non-numeric PCS)", {
+                userId,
+                extra: { station: station.name, yearMonth, dateStr, pcsKwhText },
+              });
+            }
             errorCount++;
             continue;
           }
