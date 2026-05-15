@@ -12,8 +12,8 @@ import {
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 /** ラプラス・SMA いずれも「1リクエスト短め」にして Hobby の約10秒制限を避ける */
-const LAPLACE_DAY_CHUNK = 3;
-const SMA_DAY_CHUNK = 3;
+const LAPLACE_DAY_CHUNK = 5;
+const SMA_DAY_CHUNK = 2;
 
 export default function DataCollectSection() {
   const [range, setRange] = useState(() => defaultCollectDateRange());
@@ -94,7 +94,7 @@ export default function DataCollectSection() {
 
   const resolveApiMessage = (data: unknown, fallback: string, httpStatus?: number): string => {
     if (httpStatus === 504) {
-      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。SMA は最大3日ずつに分割して呼び出しますが、それでも超える場合はさらに期間を短くするか、Vercel Pro と maxDuration の延長を検討してください。FusionSolar・ラプラスも複数リクエストになります。";
+      return "サーバーが応答するまでに時間がかかりすぎました（ゲートウェイタイムアウト）。SMA は最大2日ずつに分割して呼び出しますが、それでも超える場合はさらに期間を短くするか、Vercel Pro と maxDuration の延長を検討してください。FusionSolar・ラプラスも複数リクエストになります。";
     }
     if (data && typeof data === "object") {
       const d = data as {

@@ -291,6 +291,14 @@ async function tryGoPreviousPeriod(page: any): Promise<boolean> {
   return false;
 }
 
+/** iframe 再読込・タブ遷移直後に evaluate が落ちる場合の判定 */
+function isSmaDetachedOrClosedError(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e);
+  return /detached frame|detached Frame|Execution context was destroyed|Target closed|Session closed|Protocol error/i.test(
+    m
+  );
+}
+
 async function extractTableRowsFromContext(context: any): Promise<SmaTableCellRow[]> {
   const rows = (await context.evaluate(() => {
     const dateLike = (s: string) =>
@@ -388,15 +396,20 @@ async function extractTableRowsFromContext(context: any): Promise<SmaTableCellRo
 }
 
 async function extractTableRows(page: any): Promise<SmaTableCellRow[]> {
-  const mainRows = await extractTableRowsFromContext(page).catch(() => []);
+  const tryCtx = async (ctx: any): Promise<SmaTableCellRow[]> => {
+    try {
+      return await extractTableRowsFromContext(ctx);
+    } catch (e) {
+      if (isSmaDetachedOrClosedError(e)) return [];
+      throw e;
+    }
+  };
+
+  const mainRows = await tryCtx(page);
   if (mainRows.length > 0) return mainRows;
 
-  const hasFrames = page && typeof page.frames === "function";
-  if (!hasFrames) return [];
-
-  const frames = (page.frames() as any[]).filter((f) => f && f !== page.mainFrame?.());
-  for (const frame of frames) {
-    const frameRows = await extractTableRowsFromContext(frame).catch(() => []);
+  for (const frame of smaPageContexts(page).slice(1)) {
+    const frameRows = await tryCtx(frame);
     if (frameRows.length > 0) return frameRows;
   }
   return [];
@@ -435,15 +448,8 @@ async function dismissSunnyPortalConsentIfPresent(page: any): Promise<boolean> {
       })
       .catch(() => false)) as boolean;
 
-  const contexts: any[] = [page];
-  if (typeof page.frames === "function") {
-    const main = typeof page.mainFrame === "function" ? page.mainFrame() : null;
-    for (const f of page.frames() as any[]) {
-      if (f && f !== main) contexts.push(f);
-    }
-  }
-
   for (let attempt = 0; attempt < 3; attempt++) {
+    const contexts = smaPageContexts(page);
     for (const ctx of contexts) {
       try {
         const handle = typeof ctx.$ === "function" ? await ctx.$("#onetrust-reject-all-handler") : null;
@@ -1038,15 +1044,20 @@ async function extractRowsFromHighchartsFromContext(context: any): Promise<SmaTa
 }
 
 async function extractRowsFromHighcharts(page: any): Promise<SmaTableCellRow[]> {
-  const mainRows = await extractRowsFromHighchartsFromContext(page).catch(() => []);
+  const tryCtx = async (ctx: any): Promise<SmaTableCellRow[]> => {
+    try {
+      return await extractRowsFromHighchartsFromContext(ctx);
+    } catch (e) {
+      if (isSmaDetachedOrClosedError(e)) return [];
+      throw e;
+    }
+  };
+
+  const mainRows = await tryCtx(page);
   if (mainRows.length > 0) return mainRows;
 
-  const hasFrames = page && typeof page.frames === "function";
-  if (!hasFrames) return [];
-  const mainFrame = typeof page.mainFrame === "function" ? page.mainFrame() : null;
-  const frames = (page.frames() as any[]).filter((f) => f && f !== mainFrame);
-  for (const frame of frames) {
-    const frameRows = await extractRowsFromHighchartsFromContext(frame).catch(() => []);
+  for (const frame of smaPageContexts(page).slice(1)) {
+    const frameRows = await tryCtx(frame);
     if (frameRows.length > 0) return frameRows;
   }
   return [];
@@ -1084,8 +1095,13 @@ async function extractRowsFromImageMap(page: any): Promise<SmaTableCellRow[]> {
   const rows = await extractFromContext(page).catch(() => []);
   if (rows.length > 0) return rows;
   for (const frame of smaPageContexts(page).slice(1)) {
-    const frameRows = await extractFromContext(frame).catch(() => []);
-    if (frameRows.length > 0) return frameRows;
+    try {
+      const frameRows = await extractFromContext(frame);
+      if (frameRows.length > 0) return frameRows;
+    } catch (e) {
+      if (isSmaDetachedOrClosedError(e)) continue;
+      throw e;
+    }
   }
   return [];
 }

@@ -216,8 +216,8 @@ export async function runFusionSolarDayWindowChunks(params: {
   };
 }
 
-/** SMA は期間が長いと1リクエストが Vercel Hobby のゲートウェイ（約10秒）を超え 504 になりやすい。暦日で分割する。 */
-const SMA_DAYS_PER_CHUNK_DEFAULT = 3;
+/** SMA は2日程度までに抑え、Hobby の短いゲートウェイ上限を避ける */
+const SMA_DAYS_PER_CHUNK_DEFAULT = 2;
 
 export async function runSmaDayChunks(params: {
   rangeStart: string;
@@ -261,7 +261,7 @@ export async function runSmaDayChunks(params: {
     }
 
     if (reqIndex > 0) {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 1200));
     }
     reqIndex++;
 
@@ -380,7 +380,7 @@ export async function runLaplaceDayChunks(params: {
     await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
     if (chunkIdx > 0) {
       // Vercel 連続起動で Chromium が閉じたり /tmp が枯渇しやすいため長めに空ける
-      await new Promise((r) => setTimeout(r, 4200));
+      await new Promise((r) => setTimeout(r, 6500));
     }
     chunkIdx++;
 

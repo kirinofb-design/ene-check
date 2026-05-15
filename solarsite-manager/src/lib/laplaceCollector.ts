@@ -254,7 +254,22 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     await dialog.accept().catch(() => {});
   });
 
-  await page.goto(LAPLACE_LOGIN_URL, { waitUntil: "domcontentloaded" });
+  for (let navAttempt = 1; navAttempt <= 4; navAttempt++) {
+    try {
+      await page.goto(LAPLACE_LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      break;
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      const retryable =
+        /ERR_INSUFFICIENT_RESOURCES|NS_ERROR_FAILURE|net::ERR_|Navigation timeout/i.test(m) ||
+        m.includes("Target page, context or browser has been closed");
+      if (!retryable || navAttempt >= 4) throw e;
+      logger.warn("laplaceCollector: login URL navigation retry", {
+        extra: { attempt: navAttempt, message: m.slice(0, 200) },
+      });
+      await page.waitForTimeout(2500 * navAttempt);
+    }
+  }
   await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
   await page.waitForTimeout(1200);
 
@@ -1055,7 +1070,10 @@ export async function runLaplaceCollector(
       msg.includes("Execution context was destroyed") ||
       msg.includes("Target page, context or browser has been closed") ||
       msg.includes("ログイン後もログイン画面のまま") ||
-      msg.includes("ログインID入力欄が見つかりません")
+      msg.includes("ログインID入力欄が見つかりません") ||
+      msg.includes("detached Frame") ||
+      msg.includes("detached frame") ||
+      msg.includes("Protocol error")
     );
   };
   const start = parseYmdToUtcDate(startDate);
