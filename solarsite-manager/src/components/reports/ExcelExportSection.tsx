@@ -11,31 +11,7 @@ export default function ExcelExportSection() {
   }, []);
   const [downloading, setDownloading] = useState(false);
 
-  const getJstNow = (): Date => new Date(Date.now() + 9 * 60 * 60 * 1000);
-
-  const isCurrentMonthBefore0530Jst = (month: string): boolean => {
-    const m = /^(\d{4})-(\d{2})$/.exec(month);
-    if (!m) return false;
-    const y = Number(m[1]);
-    const mo = Number(m[2]);
-    if (!Number.isInteger(y) || !Number.isInteger(mo)) return false;
-    const nowJst = getJstNow();
-    const nowY = nowJst.getUTCFullYear();
-    const nowM = nowJst.getUTCMonth() + 1;
-    const hour = nowJst.getUTCHours();
-    const minute = nowJst.getUTCMinutes();
-    const isCurrentMonth = y === nowY && mo === nowM;
-    if (!isCurrentMonth) return false;
-    return hour < 5 || (hour === 5 && minute < 30);
-  };
-
   async function handleDownload() {
-    if (isCurrentMonthBefore0530Jst(targetMonth)) {
-      const proceed = window.confirm(
-        "当月データの前日分反映は毎朝5:30(JST)以降を推奨しています。\nこのままダウンロードしますか？"
-      );
-      if (!proceed) return;
-    }
     setDownloading(true);
     try {
       const res = await fetch(`/api/reports/export-excel?month=${encodeURIComponent(targetMonth)}`);
@@ -138,8 +114,7 @@ export default function ExcelExportSection() {
           </h2>
           <p style={{ fontSize: '12px', color: '#64748b', marginTop: '6px', lineHeight: '1.6' }}>
             対象月を選択してダウンロードしてください。<br/>
-            左の「データ取得」でDBに保存された、全サイトの日別発電データを1枚のExcelシートにまとめて出力します。<br/>
-            当月データは毎朝5:30（JST）以降のダウンロードを推奨します。
+            左の「データ取得」でDBに保存された、全サイトの日別発電データを1枚のExcelシートにまとめて出力します。
           </p>
         </div>
 
