@@ -534,11 +534,6 @@ export default function DataCollectSection() {
               {allCancelRequested ? "取消受付済み" : "実行取消"}
             </button>
           </div>
-          <p style={{ fontSize: "11px", color: "#64748b", marginTop: "10px", lineHeight: 1.5, marginBottom: 0 }}>
-            「全データ一括取得」はサーバの{" "}
-            <code style={{ fontSize: "10px" }}>/api/collect/all</code>{" "}
-            を1回だけ呼び出し、全システムの収集と後処理・ミラー同期までまとめて行います（以前と同様の経路）。環境によってはゲートウェイの時間制限に当たることがあります。個別の SMA・FusionSolar・ラプラスは引き続きブラウザから分割呼び出しです。実行取消は通信の中断とサーバへの取消通知を行います。
-          </p>
           {allLocked && lockMessage ? (
             <p style={{ fontSize: '11px', color: '#334155', marginTop: '6px', lineHeight: 1.5, marginBottom: 0 }}>
               {lockMessage}
