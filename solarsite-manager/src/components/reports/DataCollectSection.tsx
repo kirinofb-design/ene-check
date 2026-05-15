@@ -12,6 +12,7 @@ import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
 import { shouldUseClientChunkedFullCollect } from "@/lib/collectAllClientStrategy";
 import {
   runClientFullCollectOrchestration,
+  CLIENT_FULL_COLLECT_TOTAL_STEPS,
   type ClientAllCollectProgress,
 } from "@/lib/runClientFullCollectOrchestration";
 
@@ -149,9 +150,15 @@ export default function DataCollectSection() {
         const useChunked = shouldUseClientChunkedFullCollect();
         if (useChunked) {
           allClientOrchestrationActiveRef.current = true;
-          clientAllProgressForUiRef.current = null;
+          const initialProgress: ClientAllCollectProgress = {
+            completedSteps: 0,
+            totalSteps: CLIENT_FULL_COLLECT_TOTAL_STEPS,
+            currentStepKey: "eco-megane",
+          };
+          clientAllProgressForUiRef.current = initialProgress;
           setAllLocked(true);
           setRunningKind("all");
+          setLockMessage(formatClientOrchestrationLockMessage(initialProgress, ""));
           const signal = (() => {
             const c = new AbortController();
             allCollectAbortRef.current = c;
@@ -445,13 +452,16 @@ export default function DataCollectSection() {
                 ? `\n\n※${data.message}`
                 : "";
             const p = clientAllProgressForUiRef.current;
-            if (p) {
-              setLockMessage(formatClientOrchestrationLockMessage(p, parallel));
-            } else {
-              setLockMessage(
-                `実行中（排他ロック中）です。完了してから再実行してください。（開始準備中…）${parallel}`
-              );
-            }
+            setLockMessage(
+              formatClientOrchestrationLockMessage(
+                p ?? {
+                  completedSteps: 0,
+                  totalSteps: CLIENT_FULL_COLLECT_TOTAL_STEPS,
+                  currentStepKey: "eco-megane",
+                },
+                parallel
+              )
+            );
           }
           scheduleNext(RUNNING_POLL_MS);
           return;
