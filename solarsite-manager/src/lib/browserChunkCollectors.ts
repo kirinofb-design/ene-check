@@ -182,7 +182,8 @@ export async function runLaplaceDayChunks(params: {
     }
 
     if (chunkIdx > 0) {
-      await new Promise((r) => setTimeout(r, 350));
+      // 連続起動で Chromium / /tmp が枯渇し ERR_INSUFFICIENT_RESOURCES になりやすいため間隔を空ける
+      await new Promise((r) => setTimeout(r, 1200));
     }
     chunkIdx++;
 
