@@ -67,7 +67,8 @@ export default function ExcelExportSection() {
     boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
     padding: '24px',
     width: '100%',
-    height: '100%',
+    flex: 1,
+    minHeight: 0,
     margin: '0',
     fontFamily: 'sans-serif',
     textAlign: 'left' as const,
@@ -106,7 +107,7 @@ export default function ExcelExportSection() {
   };
 
   return (
-    <div style={{ textAlign: 'left', height: '100%' }}>
+    <div style={{ textAlign: 'left' }}>
       <div style={cardStyle}>
         <div style={{ marginBottom: '20px' }}>
           <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: '0' }}>
@@ -128,7 +129,7 @@ export default function ExcelExportSection() {
           />
         </div>
 
-        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto', minHeight: '117px' }}>
+        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '4px', marginTop: 'auto' }}>
           <button
             style={excelBtnStyle}
             onClick={() => void handleDownload()}
