@@ -103,6 +103,9 @@ export default function ExcelExportSection() {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
+    alignSelf: 'flex-start' as const,
+    width: 'fit-content' as const,
+    maxWidth: '100%',
     height: '45px',
     padding: '0 24px',
     backgroundColor: '#16a34a', // Excelカラーの緑
@@ -115,6 +118,7 @@ export default function ExcelExportSection() {
     marginTop: '24px',
     boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
     opacity: downloading ? 0.7 : 1,
+    whiteSpace: 'nowrap' as const,
   };
 
   return (
