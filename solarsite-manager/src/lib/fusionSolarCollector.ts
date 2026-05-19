@@ -7,6 +7,16 @@ import { autoLogin } from "@/lib/autoLogin";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import type { Page } from "playwright-core";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
+import {
+  capCollectWallBudgetMs,
+  FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS,
+  FUSION_SOLAR_DEFAULT_WALL_BUDGET_MS,
+  FUSION_SOLAR_LOGIN_COMPLETION_TIMEOUT_MS,
+  FUSION_SOLAR_LOGIN_FORM_HARD_TIMEOUT_MS,
+  FUSION_SOLAR_REPORT_PAGE_READY_TIMEOUT_MS,
+  FUSION_SOLAR_STATION_MONTH_ATTEMPT_MIN_MS,
+  FUSION_SOLAR_STATION_MONTH_ATTEMPT_TIMEOUT_MS,
+} from "@/lib/collectTimeouts";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
@@ -15,20 +25,11 @@ const HOME_URL_CANDIDATES = [
   `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/home`,
 ];
 
-/**
- * 実行時間の上限。
- * - production: Vercel の maxDuration（300s）に対し余裕を持って 270s
- * - development: ローカル検証では途中打ち切りを避けるため長めに許容
- */
-const DEFAULT_WALL_BUDGET_MS =
-  process.env.NODE_ENV === "production" ? 270_000 : 30 * 60 * 1000;
-
 const MAX_TABLE_PAGES_PER_STATION_MONTH = 20;
-const REPORT_PAGE_READY_TIMEOUT_MS = 35_000;
-const DEFAULT_STATION_MONTH_ATTEMPT_TIMEOUT_MS =
-  process.env.NODE_ENV === "production" ? 180_000 : 240_000;
-const MIN_STATION_MONTH_ATTEMPT_TIMEOUT_MS = 10_000;
-const LOGIN_COMPLETION_TIMEOUT_MS = process.env.NODE_ENV === "production" ? 25_000 : 35_000;
+const REPORT_PAGE_READY_TIMEOUT_MS = FUSION_SOLAR_REPORT_PAGE_READY_TIMEOUT_MS;
+const DEFAULT_STATION_MONTH_ATTEMPT_TIMEOUT_MS = FUSION_SOLAR_STATION_MONTH_ATTEMPT_TIMEOUT_MS;
+const MIN_STATION_MONTH_ATTEMPT_TIMEOUT_MS = FUSION_SOLAR_STATION_MONTH_ATTEMPT_MIN_MS;
+const LOGIN_COMPLETION_TIMEOUT_MS = FUSION_SOLAR_LOGIN_COMPLETION_TIMEOUT_MS;
 
 function isYmd(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -153,7 +154,7 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
     'button[type="submit"]',
   ];
 
-  const hardTimeoutMs = process.env.NODE_ENV === "production" ? 70_000 : 45_000;
+  const hardTimeoutMs = FUSION_SOLAR_LOGIN_FORM_HARD_TIMEOUT_MS;
   let idFilled = false;
   let pwFilled = false;
   for (let navAttempt = 1; navAttempt <= 2; navAttempt++) {
@@ -471,16 +472,13 @@ export async function runFusionSolarCollector(
 
   const wallBudgetMs = (() => {
     if (Number.isFinite(options?.wallBudgetMs) && (options?.wallBudgetMs ?? 0) > 30_000) {
-      if (process.env.NODE_ENV === "production") return Math.min(options!.wallBudgetMs!, 270_000);
-      return options!.wallBudgetMs!;
+      return capCollectWallBudgetMs(options!.wallBudgetMs!);
     }
     const raw = Number(process.env.FUSION_SOLAR_COLLECT_BUDGET_MS);
     if (Number.isFinite(raw) && raw > 30_000) {
-      // production では 300s を超えないよう安全側に抑える
-      if (process.env.NODE_ENV === "production") return Math.min(raw, 270_000);
-      return raw;
+      return capCollectWallBudgetMs(raw);
     }
-    return DEFAULT_WALL_BUDGET_MS;
+    return FUSION_SOLAR_DEFAULT_WALL_BUDGET_MS;
   })();
 
   const launchFusionBrowser = async (stableMode = false) =>
@@ -502,7 +500,7 @@ export async function runFusionSolarCollector(
   try {
     throwIfAllCollectCancelled(userId);
     let storageStateJson: string | null = null;
-    const autoLoginTimeoutMs = process.env.NODE_ENV === "production" ? 20_000 : 45_000;
+    const autoLoginTimeoutMs = FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS;
     const timedAutoLogin = await Promise.race([
       autoLogin(userId, "fusion-solar", { headless: true }),
       new Promise<Awaited<ReturnType<typeof autoLogin>>>((resolve) =>
