@@ -17,6 +17,7 @@ import {
   FUSION_SOLAR_STATION_MONTH_ATTEMPT_MIN_MS,
   FUSION_SOLAR_STATION_MONTH_ATTEMPT_TIMEOUT_MS,
 } from "@/lib/collectTimeouts";
+import { loadMonitoringSession, saveMonitoringSession } from "@/lib/monitoringSessionCache";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
@@ -318,7 +319,16 @@ async function ensureFusionSessionAndReportReady(
   userId: string,
   stationName: string
 ): Promise<void> {
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // storageState があるときは report 直遷移を先に試す（home 経由の login loop を減らす）
+  try {
+    await page.goto(stationReportUrl, { waitUntil: "domcontentloaded", timeout: 35_000 });
+    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+    if (!(await looksLikeLoginPage(page))) return;
+  } catch {
+    // fall through to home → report flow
+  }
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
     throwIfAllCollectCancelled(userId);
 
     let homeReached = false;
@@ -499,9 +509,14 @@ export async function runFusionSolarCollector(
 
   try {
     throwIfAllCollectCancelled(userId);
-    let storageStateJson: string | null = null;
+    let storageStateJson: string | null = await loadMonitoringSession(userId, "fusion-solar");
+    if (storageStateJson) {
+      logger.info("fusionSolarCollector: using cached storageState from DB", { userId });
+    }
     const autoLoginTimeoutMs = FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS;
-    const timedAutoLogin = await Promise.race([
+    const timedAutoLogin = storageStateJson
+      ? { systemId: "fusion-solar" as const, ok: true, storageStateJson, message: "cached session" }
+      : await Promise.race([
       autoLogin(userId, "fusion-solar", { headless: true }),
       new Promise<Awaited<ReturnType<typeof autoLogin>>>((resolve) =>
         setTimeout(
@@ -518,9 +533,10 @@ export async function runFusionSolarCollector(
     const loginResult = timedAutoLogin;
     if (loginResult.ok && loginResult.storageStateJson) {
       storageStateJson = loginResult.storageStateJson;
-      logger.info("fusionSolarCollector: using runtime storageState from autoLogin", {
-        userId,
-      });
+      if (loginResult.message !== "cached session") {
+        await saveMonitoringSession(userId, "fusion-solar", storageStateJson);
+        logger.info("fusionSolarCollector: using runtime storageState from autoLogin", { userId });
+      }
     } else {
       logger.warn("fusionSolarCollector: autoLogin failed, fallback to manual login", {
         userId,
@@ -562,17 +578,47 @@ export async function runFusionSolarCollector(
       })
       .catch(() => {});
 
-    if (!storageStateJson) {
-      await loginFusionSolar(page, loginId, password, userId);
-    }
+    const refreshStorageStateFromContext = async () => {
+      try {
+        const state = await context.storageState();
+        storageStateJson = JSON.stringify(state);
+        await saveMonitoringSession(userId, "fusion-solar", storageStateJson);
+      } catch (e) {
+        logger.warn("fusionSolarCollector: failed to persist storageState", {
+          userId,
+          extra: { error: e instanceof Error ? e.message : String(e) },
+        });
+      }
+    };
 
-    const recreateSessionPage = async (reason: string) => {
+    const ensureFusionLoggedIn = async () => {
+      for (const homeUrl of HOME_URL_CANDIDATES) {
+        try {
+          await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
+          await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+          if (!(await looksLikeLoginPage(page))) {
+            await refreshStorageStateFromContext();
+            return;
+          }
+        } catch {
+          // try next
+        }
+      }
+      storageStateJson = null;
+      await loginFusionSolar(page, loginId, password, userId);
+      await refreshStorageStateFromContext();
+    };
+
+    await ensureFusionLoggedIn();
+
+    const recreateSessionPage = async (reason: string, preferStorageState = true) => {
       logger.warn("fusionSolarCollector: recreate browser context", {
         userId,
-        extra: { reason },
+        extra: { reason, preferStorageState },
       });
       await context.close().catch(() => {});
-      context = await newContext(false);
+      const useState = preferStorageState && Boolean(storageStateJson);
+      context = await newContext(useState);
       page = await context.newPage();
       page.setDefaultTimeout(60_000);
       await context
@@ -580,7 +626,10 @@ export async function runFusionSolarCollector(
           Object.defineProperty(navigator, "webdriver", { get: () => undefined });
         })
         .catch(() => {});
-      await loginFusionSolar(page, loginId, password, userId);
+      if (!useState) {
+        await loginFusionSolar(page, loginId, password, userId);
+        await refreshStorageStateFromContext();
+      }
     };
 
     const months = getMonthsInRange(start, end);
@@ -853,6 +902,7 @@ export async function runFusionSolarCollector(
           allRows = await collectRowsWithTimeout();
         } catch (firstErr) {
           const firstErrMessage = firstErr instanceof Error ? firstErr.message : String(firstErr);
+          const retryRemaining = wallBudgetMs - (Date.now() - wallStarted);
           logger.warn("fusionSolarCollector: station/month first attempt failed, retry with relogin", {
             userId,
             extra: {
@@ -862,47 +912,53 @@ export async function runFusionSolarCollector(
             },
           });
 
-          // report遷移時のlogin loopは、再セッション作成しても同じ失敗を繰り返しやすい。
-          // 重い再ログインを抑制し、次の発電所へ進んで全体完了を優先する。
           if (firstErrMessage.includes("再ログイン要求") || firstErrMessage.includes("login loop")) {
             consecutiveLoginLoopCount++;
-            logger.warn("fusionSolarCollector: skip retry for login-loop pattern", {
-              userId,
-              extra: { station: station.name, yearMonth, consecutiveLoginLoopCount },
-            });
-            if (consecutiveLoginLoopCount >= 3) {
-              return {
-                ok: false,
-                message:
-                  "FusionSolar側で再ログインループが連続発生したため中断しました。時間を空けて再実行するか、対象期間を短くして実行してください。",
-                recordCount,
-                errorCount,
-              };
+            if (consecutiveLoginLoopCount <= 2 && retryRemaining >= 45_000) {
+              try {
+                await recreateSessionPage("login-loop recovery", true);
+                allRows = await collectRowsWithTimeout();
+                consecutiveLoginLoopCount = 0;
+              } catch {
+                logger.warn("fusionSolarCollector: login-loop recovery failed", {
+                  userId,
+                  extra: { station: station.name, yearMonth, consecutiveLoginLoopCount },
+                });
+              }
             }
-            errorCount++;
-            continue;
-          }
-
-          const retryRemaining = wallBudgetMs - (Date.now() - wallStarted);
-          if (retryRemaining < 20_000) {
-            errorCount++;
-            continue;
-          }
-
-          try {
-            await recreateSessionPage("station/month retry");
-            allRows = await collectRowsWithTimeout();
-          } catch (retryErr) {
-            logger.warn("fusionSolarCollector: station/month retry failed, skip", {
-              userId,
-              extra: {
-                station: station.name,
-                yearMonth,
-                error: retryErr instanceof Error ? retryErr.message : String(retryErr),
-              },
-            });
-            errorCount++;
-            continue;
+            if (allRows.length === 0) {
+              if (consecutiveLoginLoopCount >= 3) {
+                return {
+                  ok: false,
+                  message:
+                    "FusionSolar側で再ログインループが連続発生したため中断しました。/settings の FusionSolar ログインを確認し、期間を短く分けて再実行してください。",
+                  recordCount,
+                  errorCount,
+                };
+              }
+              errorCount++;
+              continue;
+            }
+          } else {
+            if (retryRemaining < 20_000) {
+              errorCount++;
+              continue;
+            }
+            try {
+              await recreateSessionPage("station/month retry", true);
+              allRows = await collectRowsWithTimeout();
+            } catch (retryErr) {
+              logger.warn("fusionSolarCollector: station/month retry failed, skip", {
+                userId,
+                extra: {
+                  station: station.name,
+                  yearMonth,
+                  error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+                },
+              });
+              errorCount++;
+              continue;
+            }
           }
         }
         consecutiveLoginLoopCount = 0;

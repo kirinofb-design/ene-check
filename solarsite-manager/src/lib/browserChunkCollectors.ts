@@ -118,6 +118,12 @@ export type ChunkCollectStep = {
   errorCount: number;
 };
 
+export type CollectChunkProgress = {
+  chunkIndex: number;
+  chunkTotal: number;
+  label: string;
+};
+
 /** ブラウザからのみ import すること（fetch を使用） */
 export async function runFusionSolarDayWindowChunks(params: {
   rangeStart: string;
@@ -126,6 +132,7 @@ export async function runFusionSolarDayWindowChunks(params: {
   windowPostUrl: string;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
+  onChunkProgress?: (p: CollectChunkProgress) => void;
 }): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
   /** 1日＝1リクエスト（サーバ側で全発電所をまとめて処理しログインは1回／日） */
   const slices = eachMaxDaySliceInRange(params.rangeStart, params.rangeEnd, 1);
@@ -163,6 +170,11 @@ export async function runFusionSolarDayWindowChunks(params: {
       await new Promise((r) => setTimeout(r, 1100));
     }
     reqIndex++;
+    params.onChunkProgress?.({
+      chunkIndex: reqIndex,
+      chunkTotal: slices.length,
+      label: sl.startDate === sl.endDate ? sl.startDate : `${sl.startDate}〜${sl.endDate}`,
+    });
 
     let res: Response;
     let data: unknown = null;
@@ -232,8 +244,8 @@ export async function runFusionSolarDayWindowChunks(params: {
   };
 }
 
-/** SMA は2日程度までに抑え、Hobby の短いゲートウェイ上限を避ける */
-const SMA_DAYS_PER_CHUNK_DEFAULT = 2;
+/** SMA は1日単位（Vercel では autoLogin を避け Cookie のみのため、1リクエストを軽く保つ） */
+const SMA_DAYS_PER_CHUNK_DEFAULT = 1;
 
 export async function runSmaDayChunks(params: {
   rangeStart: string;
@@ -243,6 +255,7 @@ export async function runSmaDayChunks(params: {
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
   maxDaysPerChunk?: number;
+  onChunkProgress?: (p: CollectChunkProgress) => void;
 }): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
   const span = params.maxDaysPerChunk ?? SMA_DAYS_PER_CHUNK_DEFAULT;
   const slices = eachMaxDaySliceInRange(params.rangeStart, params.rangeEnd, span);
@@ -280,6 +293,11 @@ export async function runSmaDayChunks(params: {
       await new Promise((r) => setTimeout(r, 4500));
     }
     reqIndex++;
+    params.onChunkProgress?.({
+      chunkIndex: reqIndex,
+      chunkTotal: slices.length,
+      label: `${sl.startDate}〜${sl.endDate}`,
+    });
 
     let res: Response;
     let data: unknown = null;
@@ -359,6 +377,7 @@ export async function runLaplaceDayChunks(params: {
   maxDaysPerChunk: number;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
+  onChunkProgress?: (p: CollectChunkProgress) => void;
 }): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
   const chunks = eachMaxDaySliceInRange(params.rangeStart, params.rangeEnd, params.maxDaysPerChunk);
   if (chunks.length === 0) {
@@ -399,6 +418,11 @@ export async function runLaplaceDayChunks(params: {
       await new Promise((r) => setTimeout(r, 8000));
     }
     chunkIdx++;
+    params.onChunkProgress?.({
+      chunkIndex: chunkIdx,
+      chunkTotal: chunks.length,
+      label: `${ch.startDate}〜${ch.endDate}`,
+    });
 
     let res: Response;
     let data: unknown = null;

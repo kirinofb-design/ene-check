@@ -20,7 +20,7 @@ const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 /** ラプラス・SMA いずれも「1リクエスト短め」にして Hobby の約10秒制限を避ける */
 const LAPLACE_DAY_CHUNK = 5;
-const SMA_DAY_CHUNK = 2;
+const SMA_DAY_CHUNK = 1;
 
 const reportsCardFooterShell: React.CSSProperties = {
   borderTop: "1px solid #f1f5f9",
@@ -135,7 +135,8 @@ export default function DataCollectSection() {
       p.currentStepKey === "post-finalize"
         ? "後処理・ミラー同期"
         : collectorStepLabel[p.currentStepKey] ?? p.currentStepKey;
-    const line = `実行中（排他ロック中）です。完了してから再実行してください。（進捗 ${p.completedSteps}/${p.totalSteps}・実行中: ${label}）`;
+    const detail = p.detail ? `・${p.detail}` : "";
+    const line = `実行中（排他ロック中）です。完了してから再実行してください。（進捗 ${p.completedSteps}/${p.totalSteps}・実行中: ${label}${detail}）`;
     return parallel ? `${line}${parallel}` : line;
   };
 

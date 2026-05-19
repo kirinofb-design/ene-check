@@ -1231,17 +1231,24 @@ export async function runLaplaceCollector(
         await runMonth();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        const isClosedTarget =
-          msg.includes("Target page, context or browser has been closed") || msg.includes("Execution context was destroyed");
-        if (!isClosedTarget) throw e;
+        if (!isRetryableLaplaceError(e)) throw e;
 
-        logger.warn("laplaceCollector: month failed by closed target, retry with relogin", {
+        logger.warn("laplaceCollector: month failed, retry with relogin", {
           userId,
           extra: { yearMonth, error: msg },
         });
         const recovered = await recreateLaplaceSession();
         page = recovered.page;
-        await runMonth();
+        try {
+          await runMonth();
+        } catch (retryErr) {
+          if (!isRetryableLaplaceError(retryErr)) throw retryErr;
+          logger.warn("laplaceCollector: month retry failed, skip month", {
+            userId,
+            extra: { yearMonth, error: retryErr instanceof Error ? retryErr.message : String(retryErr) },
+          });
+          errorCount++;
+        }
       }
     }
 

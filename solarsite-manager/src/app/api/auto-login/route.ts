@@ -4,6 +4,7 @@ import { handleApiError } from "@/lib/apiError";
 import { autoLogin } from "@/lib/autoLogin";
 import type { SystemId } from "@/lib/autoLogin";
 import { MONITORING_AUTH_TARGETS } from "@/lib/monitoringSystemsAuth";
+import { saveMonitoringSession, saveSmaSessionFromStorageState } from "@/lib/monitoringSessionCache";
 
 const allowedSystemIds = new Set(
   MONITORING_AUTH_TARGETS.map((t) => t.systemId)
@@ -31,9 +32,21 @@ export async function POST(request: Request) {
 
     const result = await autoLogin(userId, systemId as SystemId);
 
+    if (result.ok && result.storageStateJson) {
+      if (systemId === "sunny-portal") {
+        await saveSmaSessionFromStorageState(userId, result.storageStateJson);
+      } else if (systemId === "fusion-solar") {
+        await saveMonitoringSession(userId, "fusion-solar", result.storageStateJson);
+      }
+    }
+
     return NextResponse.json({
       ok: result.ok,
-      message: result.message,
+      message: result.ok
+        ? systemId === "sunny-portal" || systemId === "fusion-solar"
+          ? `${result.message}（セッションを保存しました。一括取得で再利用します）`
+          : result.message
+        : result.message,
     });
   } catch (e) {
     return handleApiError(request, e);

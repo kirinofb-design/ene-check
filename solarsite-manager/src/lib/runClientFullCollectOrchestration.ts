@@ -8,7 +8,7 @@ import {
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 const LAPLACE_DAY_CHUNK = 5;
-const SMA_DAY_CHUNK = 2;
+const SMA_DAY_CHUNK = 1;
 
 /** Vercel 上で Chromium を連続起動すると閉じる・枯減しやすいため、コレクター境界で空ける（ms） */
 const CHILL_AFTER_ECO_MS = 2800;
@@ -44,6 +44,8 @@ export type ClientAllCollectProgress = {
   completedSteps: number;
   totalSteps: number;
   currentStepKey: string;
+  /** チャンク取得中の補足（例: ラプラス 2/4 区間） */
+  detail?: string;
 };
 
 export type ClientAllCollectStep = {
@@ -130,11 +132,12 @@ export async function runClientFullCollectOrchestration(params: {
     });
   };
 
-  const notify = (completedSteps: number, currentStepKey: string) => {
+  const notify = (completedSteps: number, currentStepKey: string, detail?: string) => {
     onProgress?.({
       completedSteps,
       totalSteps: CLIENT_FULL_COLLECT_TOTAL_STEPS,
       currentStepKey,
+      detail,
     });
   };
 
@@ -168,6 +171,7 @@ export async function runClientFullCollectOrchestration(params: {
         interrupted = v;
       },
       maxDaysPerChunk: SMA_DAY_CHUNK,
+      onChunkProgress: (p) => notify(1, "sma", `SMA ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
     });
     steps.push(sma.step);
     if (sma.flowAborted) interrupted = true;
@@ -189,6 +193,7 @@ export async function runClientFullCollectOrchestration(params: {
       onSetInterrupted: (v) => {
         interrupted = v;
       },
+      onChunkProgress: (p) => notify(2, "laplace", `ラプラス ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
     });
     steps.push(lap.step);
     if (lap.flowAborted) interrupted = true;
@@ -222,6 +227,8 @@ export async function runClientFullCollectOrchestration(params: {
       onSetInterrupted: (v) => {
         interrupted = v;
       },
+      onChunkProgress: (p) =>
+        notify(5, "fusion-solar", `FusionSolar ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
     });
     steps.push(fus.step);
     if (fus.flowAborted) interrupted = true;
