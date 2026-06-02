@@ -17,6 +17,7 @@ import {
 } from "@/lib/runClientFullCollectOrchestration";
 
 const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
+const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 /** ラプラス・SMA いずれも「1リクエスト短め」にして Hobby の約10秒制限を避ける */
 const LAPLACE_DAY_CHUNK = 3;
@@ -300,6 +301,9 @@ export default function DataCollectSection() {
           rangeEnd: range.endDate,
           signal: new AbortController().signal,
           stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
+          windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
+          splitByStation:
+            typeof window !== "undefined" && window.location.hostname.endsWith(".vercel.app"),
           resolveApiMessage,
           onSetInterrupted: noop,
         });

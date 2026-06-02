@@ -1,4 +1,8 @@
-import { capCollectWallBudgetMs } from "@/lib/collectTimeouts";
+import { capCollectWallBudgetMs, COLLECT_WALL_BUDGET_MAX_LOCAL_MS } from "@/lib/collectTimeouts";
+
+function isVercelRuntimeEnv(): boolean {
+  return process.env.VERCEL === "1" || process.env.VERCEL === "true";
+}
 
 /**
  * FusionSolar は発電所×月で重い。Vercel maxDuration（300s）に収めつつ、
@@ -12,6 +16,8 @@ export function diffDaysInclusiveYmd(startDate: string, endDate: string): number
 }
 
 export function getFusionSolarWallBudgetMs(startDate: string, endDate: string): number {
+  // localhost / 自前ホストは 300s 制限が無いので、全発電所を1リクエストで取りきれる大きな予算にする
+  if (!isVercelRuntimeEnv()) return capCollectWallBudgetMs(COLLECT_WALL_BUDGET_MAX_LOCAL_MS);
   const days = diffDaysInclusiveYmd(startDate, endDate);
   if (days <= 0) return capCollectWallBudgetMs(270_000);
   // 日単位 window API（1日=全8発電所）では 150s だと後半の発電所が欠落しやすい

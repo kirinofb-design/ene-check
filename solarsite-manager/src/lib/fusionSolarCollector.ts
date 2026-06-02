@@ -311,6 +311,21 @@ async function looksLikeLoginPage(page: Page): Promise<boolean> {
   return url.includes("/unisso/login") || url.includes("#/login");
 }
 
+/**
+ * FusionSolar は report 直遷移時に SSO リダイレクトを挟むため、一瞬ログイン画面に
+ * 見えても数秒後にレポートへ遷移することがある。誤って login loop と判定しないよう、
+ * 待って再確認したうえで「本当にログイン画面のまま」かを返す。
+ */
+async function isSettledLoginPage(page: Page): Promise<boolean> {
+  if (!(await looksLikeLoginPage(page))) return false;
+  for (let i = 0; i < 3; i++) {
+    await page.waitForTimeout(2500);
+    await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+    if (!(await looksLikeLoginPage(page))) return false;
+  }
+  return true;
+}
+
 async function ensureFusionSessionAndReportReady(
   page: Page,
   stationReportUrl: string,
@@ -323,7 +338,8 @@ async function ensureFusionSessionAndReportReady(
   try {
     await page.goto(stationReportUrl, { waitUntil: "domcontentloaded", timeout: 35_000 });
     await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
-    if (!(await looksLikeLoginPage(page))) return;
+    // SSO リダイレクト途中での誤検知を避けるため、待って再確認する
+    if (!(await isSettledLoginPage(page))) return;
   } catch {
     // fall through to home → report flow
   }
@@ -352,18 +368,23 @@ async function ensureFusionSessionAndReportReady(
         extra: { station: stationName, attempt },
       });
       await loginFusionSolar(page, loginId, password, userId);
+      // ログイン直後は SSO セッションが安定するまで少し待つ（直後の report 遷移での再ログインループ防止）
+      await page.waitForTimeout(2000);
       continue;
     }
 
+    // home 到達後は SSO セッションを安定させてから report へ
+    await page.waitForTimeout(1500);
     await page.goto(stationReportUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
-    if (!(await looksLikeLoginPage(page))) return;
+    if (!(await isSettledLoginPage(page))) return;
 
     logger.warn("fusionSolarCollector: relogin required before report page", {
       userId,
       extra: { url: page.url(), station: stationName, attempt },
     });
     await loginFusionSolar(page, loginId, password, userId);
+    await page.waitForTimeout(2000);
   }
   throw new Error("FusionSolar: home→reportの2段階セッション確認に失敗しました（login loopの可能性）。");
 }

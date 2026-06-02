@@ -190,14 +190,14 @@ export async function runFusionSolarDayWindowChunks(params: {
   signal: AbortSignal;
   /** 1発電所×1日を処理する station ルート（Vercel 300s 制限に確実に収めるため） */
   stationPostUrl: string;
+  /** 1日×全発電所をまとめて処理する window ルート（localhost 等 300s 制限が無い環境向け） */
+  windowPostUrl: string;
+  /** true=発電所ごとに分割（Vercel）、false=1日1リクエストで全発電所（localhost） */
+  splitByStation: boolean;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
   onChunkProgress?: (p: CollectChunkProgress) => void;
 }): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
-  /**
-   * 1日×全発電所を1リクエストにまとめると Vercel の実行時間上限（300s）で
-   * 後半の発電所が欠落する。発電所ごとに分割し、ログインは DB セッションキャッシュで再利用する。
-   */
   const slices = eachMaxDaySliceInRange(params.rangeStart, params.rangeEnd, 1);
   if (slices.length === 0) {
     return {
@@ -206,6 +206,15 @@ export async function runFusionSolarDayWindowChunks(params: {
     };
   }
 
+  // localhost 等は1日1リクエストで全発電所を取得（ログイン1回・ブラウザ起動1回で高速）
+  if (!params.splitByStation) {
+    return await runFusionWindowPerDay({ ...params, slices });
+  }
+
+  /**
+   * Vercel は実行時間上限（300s）があり1日×全発電所が収まらないため発電所ごとに分割。
+   * 2回目以降は DB セッションキャッシュでログインを再利用する。
+   */
   const units: FusionUnit[] = [];
   for (const sl of slices) {
     for (const st of FUSION_SOLAR_STATIONS) {
@@ -333,6 +342,115 @@ export async function runFusionSolarDayWindowChunks(params: {
         failures.length === 0
           ? `FusionSolar: ${slices.length}日 × ${FUSION_SOLAR_STATIONS.length}発電所（計${units.length}回）に分けて取得しました。`
           : `FusionSolar: 一部失敗（${failures.length}件）。欠損は FusionSolar ボタンで該当日を再取得してください。\n${failures.slice(0, 10).join("\n")}${
+              failures.length > 10 ? "\n…他省略" : ""
+            }`,
+      recordCount: totalRec,
+      errorCount: totalErr,
+    },
+    flowAborted: false,
+  };
+}
+
+/** 1日＝1リクエスト（サーバ側で全発電所をまとめて処理。localhost 等 300s 制限が無い環境向け）。 */
+async function runFusionWindowPerDay(params: {
+  slices: DateSlice[];
+  signal: AbortSignal;
+  windowPostUrl: string;
+  resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
+  onSetInterrupted: (v: boolean) => void;
+  onChunkProgress?: (p: CollectChunkProgress) => void;
+}): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
+  const { slices } = params;
+  let totalRec = 0;
+  let totalErr = 0;
+  const failures: string[] = [];
+  const failedSlices: DateSlice[] = [];
+  let reqIndex = 0;
+
+  const runOneSlice = async (sl: DateSlice): Promise<SliceCollectOutcome> => {
+    const out = await fetchCollectPostJsonWithRetries({
+      url: params.windowPostUrl,
+      body: { startDate: sl.startDate, endDate: sl.endDate },
+      signal: params.signal,
+      maxAttempts: 5,
+    });
+    const ok = Boolean(
+      out.res.ok &&
+        out.data &&
+        typeof out.data === "object" &&
+        (out.data as { ok?: boolean }).ok === true
+    );
+    const msg = params.resolveApiMessage(
+      out.data,
+      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+      out.res.status
+    );
+    const rec =
+      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+        ? (out.data as { recordCount: number }).recordCount
+        : 0;
+    const err =
+      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+        ? (out.data as { errorCount: number }).errorCount
+        : 0;
+    return { ok, msg, rec, err, label: dateSliceLabel(sl) };
+  };
+
+  const abortedStep = (): { step: ChunkCollectStep; flowAborted: boolean } => {
+    params.onSetInterrupted(true);
+    return {
+      step: {
+        key: "fusion-solar",
+        ok: failures.length === 0,
+        message:
+          failures.length > 0
+            ? `中断。一部失敗:\n${failures.join("\n")}`
+            : "FusionSolar 取得が中断されました。",
+        recordCount: totalRec,
+        errorCount: totalErr,
+      },
+      flowAborted: true,
+    };
+  };
+
+  for (const sl of slices) {
+    if (params.signal.aborted) return abortedStep();
+    if (reqIndex > 0) await new Promise((r) => setTimeout(r, 1100));
+    reqIndex++;
+    params.onChunkProgress?.({ chunkIndex: reqIndex, chunkTotal: slices.length, label: dateSliceLabel(sl) });
+
+    try {
+      const result = await runOneSlice(sl);
+      totalRec += result.rec;
+      totalErr += result.err;
+      if (!result.ok) {
+        failures.push(`${dateSliceLabel(sl)}: ${result.msg}`);
+        failedSlices.push(sl);
+      }
+    } catch (e) {
+      if (isAbortError(e)) return abortedStep();
+      failures.push(`${dateSliceLabel(sl)}: ${e instanceof Error ? e.message : String(e)}`);
+      failedSlices.push(sl);
+    }
+  }
+
+  const retryTotals = await retryFailedDateSlices({
+    failedSlices,
+    failures,
+    signal: params.signal,
+    runSlice: runOneSlice,
+  });
+  totalRec += retryTotals.extraRec;
+  totalErr += retryTotals.extraErr;
+
+  return {
+    step: {
+      key: "fusion-solar",
+      ok: failures.length === 0,
+      message:
+        failures.length === 0
+          ? `FusionSolar: ${slices.length}日分を取得しました（各日 全${FUSION_SOLAR_STATIONS.length}発電所）。`
+          : `FusionSolar: 一部失敗（${failures.length}件）。欠損日は FusionSolar ボタンで再取得してください。\n${failures.slice(0, 10).join("\n")}${
               failures.length > 10 ? "\n…他省略" : ""
             }`,
       recordCount: totalRec,
