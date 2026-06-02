@@ -474,55 +474,94 @@ async function loginLaplace(page: any, loginId: string, password: string) {
     return true;
   };
 
-  for (let pass = 0; pass < 3; pass++) {
-    if (looksLikePostLoginNavigation()) break;
-    const handled = await tryAcceptTermsReconsent();
-    if (!handled) break;
-    await page.waitForTimeout(1000);
+  /** ログインフォーム（パスワード欄＋ログインボタン or loginContainer）がまだ見えているか */
+  const isLoginFormVisible = async (): Promise<boolean> => {
+    for (const root of getRoots()) {
+      const pwLoc = root.locator('input[type="password"]').first();
+      const pwVisible =
+        (await pwLoc.count().catch(() => 0)) > 0 && (await pwLoc.isVisible().catch(() => false));
+      const loginBtnStill = await root
+        .getByRole("button", { name: /ログイン|Login/i })
+        .first()
+        .isVisible()
+        .catch(() => false);
+      const loginContainer = root.locator(".loginContainer").first();
+      const loginContainerVisible =
+        (await loginContainer.count().catch(() => 0)) > 0 &&
+        (await loginContainer.isVisible().catch(() => false));
+      // ログイン失敗時は多くの場合パスワード欄＋ログインボタンが揃う。片方だけでは誤検知しやすい。
+      if (loginContainerVisible || (pwVisible && loginBtnStill)) return true;
+    }
+    return false;
+  };
+
+  /** 明確な失敗（誤入力・CAPTCHA）なら即 throw。判定不能なら null を返す。 */
+  const throwIfExplicitLoginFailure = async (): Promise<void> => {
+    const bodySnippet = (await bodyTextAnyRoot()).slice(0, 1500);
+    const lower = bodySnippet.toLowerCase();
+    if (bodySnippet.includes("パスワード") && (bodySnippet.includes("誤り") || bodySnippet.includes("不正"))) {
+      throw new Error(
+        "ラプラス: ログインに失敗しました（ID/パスワード誤りの可能性が高いです）。/settings の認証情報を確認してください。"
+      );
+    }
+    if (lower.includes("captcha") || bodySnippet.includes("画像認証")) {
+      throw new Error(
+        "ラプラス: ログイン画面で追加認証（CAPTCHA 等）が要求されています。手動ログインで突破後に再実行してください。"
+      );
+    }
+  };
+
+  // SPA はログイン POST 後の遷移が遅いことがあるため、最大 ~45 秒ポーリングで待つ。
+  // 途中で利用規約の再同意ページが出たら処理し、まだログイン画面のままなら1度だけ再送信する。
+  const postLoginDeadline = Date.now() + 45_000;
+  let resubmitted = false;
+  let navigated = false;
+  while (Date.now() < postLoginDeadline) {
+    await page.waitForLoadState("domcontentloaded", { timeout: 6_000 }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
+
+    if (looksLikePostLoginNavigation()) {
+      navigated = true;
+      break;
+    }
+
+    if (await tryAcceptTermsReconsent()) {
+      await page.waitForTimeout(1200);
+      continue;
+    }
+
+    if (await isLoginFormVisible()) {
+      await throwIfExplicitLoginFailure();
+      if (!resubmitted) {
+        // 初回クリックがフォーム未活性などで POST されなかった場合に備えて1度だけ再入力・再送信
+        logger.warn("laplaceCollector: still on login form, re-submitting once", {
+          extra: { url: page.url() },
+        });
+        await fillIntoAnyRoot(idSelectors, loginId);
+        await fillIntoAnyRoot(pwSelectors, password);
+        await clickAnyRoot(btnSelectors);
+        resubmitted = true;
+        await page.waitForTimeout(2500);
+        continue;
+      }
+    }
+
+    await page.waitForTimeout(1500);
   }
 
   logger.info("laplaceCollector: after login", { extra: { url: page.url(), title: await page.title() } });
 
-  if (looksLikePostLoginNavigation()) {
+  if (navigated || looksLikePostLoginNavigation()) {
     logger.info("laplaceCollector: post-login URL detected, skipping login-form heuristic");
     return;
   }
 
-  let stillLogin = false;
-  for (const root of getRoots()) {
-    const pwLoc = root.locator('input[type="password"]').first();
-    const pwVisible =
-      (await pwLoc.count().catch(() => 0)) > 0 && (await pwLoc.isVisible().catch(() => false));
-    const loginBtnStill = await root
-      .getByRole("button", { name: /ログイン|Login/i })
-      .first()
-      .isVisible()
-      .catch(() => false);
-    const loginContainer = root.locator(".loginContainer").first();
-    const loginContainerVisible =
-      (await loginContainer.count().catch(() => 0)) > 0 &&
-      (await loginContainer.isVisible().catch(() => false));
-    // ログイン失敗時は多くの場合パスワード欄＋ログインボタンが揃う。片方だけでは誤検知しやすい。
-    if (loginContainerVisible || (pwVisible && loginBtnStill)) {
-      stillLogin = true;
-      break;
-    }
-  }
-
-  if (stillLogin) {
+  if (await isLoginFormVisible()) {
     const bodySnippet = (await bodyTextAnyRoot()).slice(0, 1200);
     logger.warn("laplaceCollector: login container still visible", {
       extra: { url: page.url(), bodySnippet: bodySnippet.replace(/\s+/g, " ").trim() },
     });
-
-    const lower = bodySnippet.toLowerCase();
-    if (bodySnippet.includes("パスワード") && (bodySnippet.includes("誤り") || bodySnippet.includes("不正"))) {
-      throw new Error("ラプラス: ログインに失敗しました（ID/パスワード誤りの可能性が高いです）。/settings の認証情報を確認してください。");
-    }
-    if (lower.includes("captcha") || bodySnippet.includes("画像認証")) {
-      throw new Error("ラプラス: ログイン画面で追加認証（CAPTCHA 等）が要求されています。手動ログインで突破後に再実行してください。");
-    }
-
+    await throwIfExplicitLoginFailure();
     throw new Error(
       "ラプラス: ログイン後もログイン画面のままです。ID/パスワード・利用規約の同意を確認してください。"
     );
