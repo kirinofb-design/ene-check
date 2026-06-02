@@ -5,7 +5,7 @@ import {
   runSmaDayChunks,
 } from "@/lib/browserChunkCollectors";
 
-const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
+const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 const LAPLACE_DAY_CHUNK = 3;
 const SMA_DAY_CHUNK = 1;
@@ -222,7 +222,7 @@ export async function runClientFullCollectOrchestration(params: {
       rangeStart: range.startDate,
       rangeEnd: range.endDate,
       signal,
-      windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
+      stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
       resolveApiMessage,
       onSetInterrupted: (v) => {
         interrupted = v;

@@ -16,7 +16,7 @@ import {
   type ClientAllCollectProgress,
 } from "@/lib/runClientFullCollectOrchestration";
 
-const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
+const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 /** ラプラス・SMA いずれも「1リクエスト短め」にして Hobby の約10秒制限を避ける */
 const LAPLACE_DAY_CHUNK = 3;
@@ -299,7 +299,7 @@ export default function DataCollectSection() {
           rangeStart: range.startDate,
           rangeEnd: range.endDate,
           signal: new AbortController().signal,
-          windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
+          stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
           resolveApiMessage,
           onSetInterrupted: noop,
         });
