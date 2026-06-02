@@ -7,7 +7,7 @@ import {
 
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
-const LAPLACE_DAY_CHUNK = 5;
+const LAPLACE_DAY_CHUNK = 3;
 const SMA_DAY_CHUNK = 1;
 
 /** Vercel 上で Chromium を連続起動すると閉じる・枯減しやすいため、コレクター境界で空ける（ms） */

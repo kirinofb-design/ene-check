@@ -89,8 +89,27 @@ export async function runSmaCollector(
 
   const cachedSession = await prisma.smaCookieCache.findFirst({
     where: { userId, expiresAt: { gt: new Date() } },
-    select: { id: true },
+    select: { id: true, cookieJson: true },
   });
+
+  const runtimeFromCache = (() => {
+    if (!cachedSession?.cookieJson) return undefined;
+    try {
+      const parsed = JSON.parse(cachedSession.cookieJson) as { cookies?: unknown[] };
+      if (parsed && Array.isArray(parsed.cookies) && parsed.cookies.length > 0) {
+        return cachedSession.cookieJson;
+      }
+    } catch {
+      // legacy array format
+      try {
+        const arr = JSON.parse(cachedSession.cookieJson) as unknown[];
+        if (Array.isArray(arr) && arr.length > 0) return cachedSession.cookieJson;
+      } catch {
+        // ignore
+      }
+    }
+    return undefined;
+  })();
 
   if (!cachedSession && !allowAutoLogin) {
     return {
@@ -103,7 +122,12 @@ export async function runSmaCollector(
 
   let cookieAttempt: Awaited<ReturnType<typeof runSmaCollectorCookie>> | null = null;
   if (cachedSession) {
-    cookieAttempt = await runSmaCollectorCookie(userId, startDate, endDate);
+    cookieAttempt = await runSmaCollectorCookie(
+      userId,
+      startDate,
+      endDate,
+      runtimeFromCache
+    );
     if (cookieAttempt.ok) {
       return cookieAttempt;
     }

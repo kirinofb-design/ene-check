@@ -124,6 +124,63 @@ export type CollectChunkProgress = {
   label: string;
 };
 
+type DateSlice = { startDate: string; endDate: string };
+
+function dateSliceLabel(sl: DateSlice): string {
+  return sl.startDate === sl.endDate ? sl.startDate : `${sl.startDate}〜${sl.endDate}`;
+}
+
+type SliceCollectOutcome = {
+  ok: boolean;
+  msg: string;
+  rec: number;
+  err: number;
+  label: string;
+};
+
+/** 失敗した日付チャンクを1パス再試行し、成功した日の failures を除去する */
+async function retryFailedDateSlices(params: {
+  failedSlices: DateSlice[];
+  failures: string[];
+  signal: AbortSignal;
+  runSlice: (sl: DateSlice) => Promise<SliceCollectOutcome>;
+  beforeRetry?: () => Promise<void>;
+  betweenMs?: number;
+}): Promise<{ extraRec: number; extraErr: number }> {
+  if (params.failedSlices.length === 0 || params.signal.aborted) {
+    return { extraRec: 0, extraErr: 0 };
+  }
+  await params.beforeRetry?.();
+  await new Promise((r) => setTimeout(r, 6000));
+  let extraRec = 0;
+  let extraErr = 0;
+  const recovered = new Set<string>();
+  for (const sl of params.failedSlices) {
+    if (params.signal.aborted) break;
+    await new Promise((r) => setTimeout(r, params.betweenMs ?? 1500));
+    try {
+      const result = await params.runSlice(sl);
+      extraRec += result.rec;
+      extraErr += result.err;
+      if (result.ok) recovered.add(result.label);
+    } catch {
+      // 初回 failures を維持
+    }
+  }
+  if (recovered.size > 0) {
+    for (let i = params.failures.length - 1; i >= 0; i--) {
+      const line = params.failures[i] ?? "";
+      for (const label of recovered) {
+        if (line.startsWith(`${label}:`) || line.startsWith(`${label}〜`)) {
+          params.failures.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+  return { extraRec, extraErr };
+}
+
 /** ブラウザからのみ import すること（fetch を使用） */
 export async function runFusionSolarDayWindowChunks(params: {
   rangeStart: string;
@@ -146,7 +203,37 @@ export async function runFusionSolarDayWindowChunks(params: {
   let totalRec = 0;
   let totalErr = 0;
   const failures: string[] = [];
+  const failedSlices: DateSlice[] = [];
   let reqIndex = 0;
+
+  const runOneFusionSlice = async (sl: DateSlice): Promise<SliceCollectOutcome> => {
+    const out = await fetchCollectPostJsonWithRetries({
+      url: params.windowPostUrl,
+      body: { startDate: sl.startDate, endDate: sl.endDate },
+      signal: params.signal,
+      maxAttempts: 5,
+    });
+    const ok = Boolean(
+      out.res.ok &&
+        out.data &&
+        typeof out.data === "object" &&
+        (out.data as { ok?: boolean }).ok === true
+    );
+    const msg = params.resolveApiMessage(
+      out.data,
+      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+      out.res.status
+    );
+    const rec =
+      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+        ? (out.data as { recordCount: number }).recordCount
+        : 0;
+    const err =
+      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+        ? (out.data as { errorCount: number }).errorCount
+        : 0;
+    return { ok, msg, rec, err, label: sl.startDate };
+  };
 
   for (const sl of slices) {
     if (params.signal.aborted) {
@@ -173,19 +260,17 @@ export async function runFusionSolarDayWindowChunks(params: {
     params.onChunkProgress?.({
       chunkIndex: reqIndex,
       chunkTotal: slices.length,
-      label: sl.startDate === sl.endDate ? sl.startDate : `${sl.startDate}〜${sl.endDate}`,
+      label: dateSliceLabel(sl),
     });
 
-    let res: Response;
-    let data: unknown = null;
     try {
-      const out = await fetchCollectPostJsonWithRetries({
-        url: params.windowPostUrl,
-        body: { startDate: sl.startDate, endDate: sl.endDate },
-        signal: params.signal,
-      });
-      res = out.res;
-      data = out.data;
+      const result = await runOneFusionSlice(sl);
+      totalRec += result.rec;
+      totalErr += result.err;
+      if (!result.ok) {
+        failures.push(`${sl.startDate}: ${result.msg}`);
+        failedSlices.push(sl);
+      }
     } catch (e) {
       if (isAbortError(e)) {
         params.onSetInterrupted(true);
@@ -204,28 +289,18 @@ export async function runFusionSolarDayWindowChunks(params: {
         };
       }
       failures.push(`${sl.startDate}: ${e instanceof Error ? e.message : String(e)}`);
-      continue;
-    }
-    const ok = res.ok && data && typeof data === "object" && Boolean((data as { ok?: boolean }).ok);
-    const msg = params.resolveApiMessage(
-      data,
-      res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${res.status}）`,
-      res.status
-    );
-    const rec =
-      data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
-        ? (data as { recordCount: number }).recordCount
-        : 0;
-    const err =
-      data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
-        ? (data as { errorCount: number }).errorCount
-        : 0;
-    totalRec += rec;
-    totalErr += err;
-    if (!ok) {
-      failures.push(`${sl.startDate}: ${msg}`);
+      failedSlices.push(sl);
     }
   }
+
+  const retryTotals = await retryFailedDateSlices({
+    failedSlices,
+    failures,
+    signal: params.signal,
+    runSlice: runOneFusionSlice,
+  });
+  totalRec += retryTotals.extraRec;
+  totalErr += retryTotals.extraErr;
 
   return {
     step: {
@@ -234,7 +309,7 @@ export async function runFusionSolarDayWindowChunks(params: {
       message:
         failures.length === 0
           ? `FusionSolar: 全日を1日単位（${slices.length}回）に分け、各回で全${FUSION_SOLAR_STATIONS.length}発電所を取得しました。`
-          : `FusionSolar: 一部失敗（${failures.length}件）。\n${failures.slice(0, 10).join("\n")}${
+          : `FusionSolar: 一部失敗（${failures.length}件）。欠損日は FusionSolar ボタンで該当日を再取得してください。\n${failures.slice(0, 10).join("\n")}${
               failures.length > 10 ? "\n…他省略" : ""
             }`,
       recordCount: totalRec,
@@ -392,7 +467,37 @@ export async function runLaplaceDayChunks(params: {
   let totalRec = 0;
   let totalErr = 0;
   const failures: string[] = [];
+  const failedSlices: DateSlice[] = [];
   let chunkIdx = 0;
+
+  const runOneLaplaceSlice = async (ch: DateSlice): Promise<SliceCollectOutcome> => {
+    const out = await fetchCollectPostJsonWithRetries({
+      url: params.laplacePostUrl,
+      body: { startDate: ch.startDate, endDate: ch.endDate },
+      signal: params.signal,
+      maxAttempts: 5,
+    });
+    const ok = Boolean(
+      out.res.ok &&
+        out.data &&
+        typeof out.data === "object" &&
+        (out.data as { ok?: boolean }).ok === true
+    );
+    const msg = params.resolveApiMessage(
+      out.data,
+      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+      out.res.status
+    );
+    const rec =
+      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+        ? (out.data as { recordCount: number }).recordCount
+        : 0;
+    const err =
+      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+        ? (out.data as { errorCount: number }).errorCount
+        : 0;
+    return { ok, msg, rec, err, label: dateSliceLabel(ch) };
+  };
 
   for (const ch of chunks) {
     if (params.signal.aborted) {
@@ -421,20 +526,17 @@ export async function runLaplaceDayChunks(params: {
     params.onChunkProgress?.({
       chunkIndex: chunkIdx,
       chunkTotal: chunks.length,
-      label: `${ch.startDate}〜${ch.endDate}`,
+      label: dateSliceLabel(ch),
     });
 
-    let res: Response;
-    let data: unknown = null;
     try {
-      const out = await fetchCollectPostJsonWithRetries({
-        url: params.laplacePostUrl,
-        body: { startDate: ch.startDate, endDate: ch.endDate },
-        signal: params.signal,
-        maxAttempts: 5,
-      });
-      res = out.res;
-      data = out.data;
+      const result = await runOneLaplaceSlice(ch);
+      totalRec += result.rec;
+      totalErr += result.err;
+      if (!result.ok) {
+        failures.push(`${dateSliceLabel(ch)}: ${result.msg}`);
+        failedSlices.push(ch);
+      }
     } catch (e) {
       if (isAbortError(e)) {
         params.onSetInterrupted(true);
@@ -452,29 +554,23 @@ export async function runLaplaceDayChunks(params: {
           flowAborted: true,
         };
       }
-      failures.push(`${ch.startDate}〜${ch.endDate}: ${e instanceof Error ? e.message : String(e)}`);
-      continue;
-    }
-    const ok = res.ok && data && typeof data === "object" && Boolean((data as { ok?: boolean }).ok);
-    const msg = params.resolveApiMessage(
-      data,
-      res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${res.status}）`,
-      res.status
-    );
-    const rec =
-      data && typeof data === "object" && typeof (data as { recordCount?: unknown }).recordCount === "number"
-        ? (data as { recordCount: number }).recordCount
-        : 0;
-    const err =
-      data && typeof data === "object" && typeof (data as { errorCount?: unknown }).errorCount === "number"
-        ? (data as { errorCount: number }).errorCount
-        : 0;
-    totalRec += rec;
-    totalErr += err;
-    if (!ok) {
-      failures.push(`${ch.startDate}〜${ch.endDate}: ${msg}`);
+      failures.push(`${dateSliceLabel(ch)}: ${e instanceof Error ? e.message : String(e)}`);
+      failedSlices.push(ch);
     }
   }
+
+  const retryTotals = await retryFailedDateSlices({
+    failedSlices,
+    failures,
+    signal: params.signal,
+    beforeRetry: async () => {
+      await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
+    },
+    betweenMs: 3000,
+    runSlice: runOneLaplaceSlice,
+  });
+  totalRec += retryTotals.extraRec;
+  totalErr += retryTotals.extraErr;
 
   return {
     step: {
@@ -483,7 +579,7 @@ export async function runLaplaceDayChunks(params: {
       message:
         failures.length === 0
           ? `ラプラス: ${chunks.length} 区間（最大${params.maxDaysPerChunk}日ずつ）で取得しました。`
-          : `ラプラス: 一部失敗（${failures.length}件）。\n${failures.slice(0, 6).join("\n")}${
+          : `ラプラス: 一部失敗（${failures.length}件）。欠損日はラプラスボタンで該当区間を再取得してください。\n${failures.slice(0, 6).join("\n")}${
               failures.length > 6 ? "\n…他省略" : ""
             }`,
       recordCount: totalRec,

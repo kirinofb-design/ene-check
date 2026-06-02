@@ -1303,15 +1303,28 @@ export async function runSmaCollectorCookie(
 
   const hasRuntimeCookies =
     typeof runtimeCookieJson === "string" && runtimeCookieJson.trim().length > 0;
+  const isStorageStateFromCache =
+    !hasRuntimeCookies &&
+    (() => {
+      try {
+        const p = JSON.parse(cookieJsonRaw) as { cookies?: unknown[] };
+        return Boolean(p && Array.isArray(p.cookies) && p.cookies.length > 0);
+      } catch {
+        return false;
+      }
+    })();
+  const useFullCookieSet = hasRuntimeCookies || isStorageStateFromCache;
   const formsLoginOnly = parsedCookies.filter(
     (c) => c.name === ".SunnyPortalFormsLogin" || c.name === "SunnyPortalFormsLogin"
   );
-  const portalCookies = parsedCookies.filter((c) => /sunnyportal\.com/i.test(c.domain ?? ""));
+  const portalCookies = parsedCookies.filter((c) =>
+    /sunnyportal\.com|sma\.energy/i.test(c.domain ?? "")
+  );
   const hasFormsInPortal = portalCookies.some((c) => /SunnyPortalFormsLogin/i.test(c.name));
   // 複数 Cookie を登録済みなら sunnyportal 向けをまとめて注入（セッション維持に有効）
-  const cookiesToInject = hasRuntimeCookies
+  const cookiesToInject = useFullCookieSet
     ? parsedCookies
-    : portalCookies.length >= 2 && hasFormsInPortal
+    : portalCookies.length >= 1
       ? portalCookies
       : formsLoginOnly;
 
@@ -1319,7 +1332,7 @@ export async function runSmaCollectorCookie(
     return {
       ok: false,
       message:
-        hasRuntimeCookies
+        useFullCookieSet
           ? "SMA自動ログイン後に有効なSunny Portal Cookieを取得できませんでした。/settings でSMAログイン情報を再保存して再実行してください。"
           : ".SunnyPortalFormsLogin が見つかりません。設定で value のみ、または Chrome の Cookie 配列（JSON）を登録してください。",
       recordCount: 0,

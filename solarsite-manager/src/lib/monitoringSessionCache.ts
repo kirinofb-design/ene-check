@@ -45,13 +45,22 @@ export async function loadMonitoringSession(
   userId: string,
   systemId: MonitoringSessionSystemId
 ): Promise<string | null> {
-  const row = await prisma.monitoringSessionCache.findUnique({
-    where: { userId_systemId: { userId, systemId } },
-    select: { sessionJson: true, expiresAt: true },
-  });
-  if (!row || row.expiresAt.getTime() <= Date.now()) return null;
-  if (parseStorageStateCookies(row.sessionJson) === 0) return null;
-  return row.sessionJson;
+  try {
+    const row = await prisma.monitoringSessionCache.findUnique({
+      where: { userId_systemId: { userId, systemId } },
+      select: { sessionJson: true, expiresAt: true },
+    });
+    if (!row || row.expiresAt.getTime() <= Date.now()) return null;
+    if (parseStorageStateCookies(row.sessionJson) === 0) return null;
+    return row.sessionJson;
+  } catch (e) {
+    // テーブル未作成・接続不調でもコレクター全体を落とさず autoLogin にフォールバック
+    logger.warn("monitoringSessionCache: load failed (fallback to autoLogin)", {
+      userId,
+      extra: { systemId, error: e instanceof Error ? e.message : String(e) },
+    });
+    return null;
+  }
 }
 
 /** SMA は既存 SmaCookieCache を storageState 形式でも保存 */
@@ -78,7 +87,7 @@ export async function saveSmaSessionFromStorageState(userId: string, storageStat
     return;
   }
 
-  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const smaCookieCache = prisma.smaCookieCache as {
     upsert: (args: unknown) => Promise<unknown>;
   };

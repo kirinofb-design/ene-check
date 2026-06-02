@@ -14,8 +14,10 @@ export function diffDaysInclusiveYmd(startDate: string, endDate: string): number
 export function getFusionSolarWallBudgetMs(startDate: string, endDate: string): number {
   const days = diffDaysInclusiveYmd(startDate, endDate);
   if (days <= 0) return capCollectWallBudgetMs(270_000);
-  if (days <= 3) return capCollectWallBudgetMs(150_000);
-  if (days <= 7) return capCollectWallBudgetMs(180_000);
-  if (days <= 14) return capCollectWallBudgetMs(220_000);
+  // 日単位 window API（1日=全8発電所）では 150s だと後半の発電所が欠落しやすい
+  if (days <= 1) return capCollectWallBudgetMs(270_000);
+  if (days <= 3) return capCollectWallBudgetMs(240_000);
+  if (days <= 7) return capCollectWallBudgetMs(220_000);
+  if (days <= 14) return capCollectWallBudgetMs(250_000);
   return capCollectWallBudgetMs(270_000);
 }
