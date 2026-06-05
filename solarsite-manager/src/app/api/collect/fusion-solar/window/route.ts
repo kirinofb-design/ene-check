@@ -6,6 +6,7 @@ import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock"
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
 import { diffDaysInclusiveYmd, getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
 import { logger } from "@/lib/logger";
+import { isKnownFusionStationNe } from "@/lib/fusionSolarStations";
 
 /**
  * 指定期間が短いときだけ全発電所をまとめて取得（ログインは1回）。
@@ -27,9 +28,29 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       startDate?: string;
       endDate?: string;
+      /** 省略時は全発電所。本番バッチ取得用 */
+      stationNeList?: string[];
     };
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
+    const stationNeList = Array.isArray(body?.stationNeList)
+      ? body.stationNeList.filter((n): n is string => typeof n === "string" && n.trim().length > 0)
+      : undefined;
+
+    if (stationNeList && stationNeList.length > 0) {
+      const invalid = stationNeList.filter((ne) => !isKnownFusionStationNe(ne));
+      if (invalid.length > 0) {
+        return NextResponse.json(
+          {
+            ok: false,
+            message: `stationNeList に未知の NE があります: ${invalid.join(", ")}`,
+            recordCount: 0,
+            errorCount: 0,
+          },
+          { status: 400 }
+        );
+      }
+    }
 
     if (!startDate || !endDate) {
       return NextResponse.json(
@@ -80,7 +101,10 @@ export async function POST(request: Request) {
 
     const wallBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
     try {
-      const result = await runFusionSolarCollector(userId, startDate, endDate, { wallBudgetMs });
+      const result = await runFusionSolarCollector(userId, startDate, endDate, {
+        wallBudgetMs,
+        stationNeAllowList: stationNeList && stationNeList.length > 0 ? stationNeList : undefined,
+      });
       return NextResponse.json({
         ok: result.ok,
         message: result.message,

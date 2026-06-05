@@ -18,7 +18,7 @@ import {
   FUSION_SOLAR_STATION_MONTH_ATTEMPT_MIN_MS,
   FUSION_SOLAR_STATION_MONTH_ATTEMPT_TIMEOUT_MS,
 } from "@/lib/collectTimeouts";
-import { loadMonitoringSession, saveMonitoringSession } from "@/lib/monitoringSessionCache";
+import { clearMonitoringSession, loadMonitoringSession, saveMonitoringSession } from "@/lib/monitoringSessionCache";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
@@ -538,23 +538,31 @@ export async function runFusionSolarCollector(
     const autoLoginTimeoutMs = isVercelRuntime()
       ? FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_VERCEL_MS
       : FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS;
-    const timedAutoLogin = storageStateJson
-      ? { systemId: "fusion-solar" as const, ok: true, storageStateJson, message: "cached session" }
-      : await Promise.race([
-      autoLogin(userId, "fusion-solar", { headless: true }),
-      new Promise<Awaited<ReturnType<typeof autoLogin>>>((resolve) =>
-        setTimeout(
-          () =>
-            resolve({
-              systemId: "fusion-solar",
-              ok: false,
-              message: `autoLogin timeout (${autoLoginTimeoutMs}ms)`,
-            }),
-          autoLoginTimeoutMs
-        )
-      ),
-    ]);
-    const loginResult = timedAutoLogin;
+
+    const runTimedAutoLogin = async () =>
+      Promise.race([
+        autoLogin(userId, "fusion-solar", { headless: true }),
+        new Promise<Awaited<ReturnType<typeof autoLogin>>>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                systemId: "fusion-solar",
+                ok: false,
+                message: `autoLogin timeout (${autoLoginTimeoutMs}ms)`,
+              }),
+            autoLoginTimeoutMs
+          )
+        ),
+      ]);
+
+    let usedCachedSession = Boolean(storageStateJson);
+    let loginResult: Awaited<ReturnType<typeof autoLogin>>;
+    if (storageStateJson) {
+      loginResult = { systemId: "fusion-solar", ok: true, storageStateJson, message: "cached session" };
+    } else {
+      loginResult = await runTimedAutoLogin();
+    }
+
     if (loginResult.ok && loginResult.storageStateJson) {
       storageStateJson = loginResult.storageStateJson;
       if (loginResult.message !== "cached session") {
@@ -615,7 +623,12 @@ export async function runFusionSolarCollector(
       }
     };
 
-    const ensureFusionLoggedIn = async () => {
+    const ensureFusionLoggedIn = async (forceRefresh = false): Promise<void> => {
+      if (forceRefresh) {
+        usedCachedSession = false;
+        storageStateJson = null;
+        await clearMonitoringSession(userId, "fusion-solar");
+      }
       for (const homeUrl of HOME_URL_CANDIDATES) {
         try {
           await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
@@ -626,6 +639,27 @@ export async function runFusionSolarCollector(
           }
         } catch {
           // try next
+        }
+      }
+      // DB キャッシュが無効 — autoLogin で更新してから再試行
+      if (usedCachedSession && !forceRefresh) {
+        logger.warn("fusionSolarCollector: cached session invalid, refreshing via autoLogin", { userId });
+        await context.close().catch(() => {});
+        await clearMonitoringSession(userId, "fusion-solar");
+        const refresh = await runTimedAutoLogin();
+        if (refresh.ok && refresh.storageStateJson) {
+          storageStateJson = refresh.storageStateJson;
+          usedCachedSession = false;
+          await saveMonitoringSession(userId, "fusion-solar", storageStateJson);
+          context = await newContext(true);
+          page = await context.newPage();
+          page.setDefaultTimeout(60_000);
+          await context
+            .addInitScript(() => {
+              Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+            })
+            .catch(() => {});
+          return ensureFusionLoggedIn(true);
         }
       }
       storageStateJson = null;
@@ -938,6 +972,9 @@ export async function runFusionSolarCollector(
 
           if (firstErrMessage.includes("再ログイン要求") || firstErrMessage.includes("login loop")) {
             consecutiveLoginLoopCount++;
+            await clearMonitoringSession(userId, "fusion-solar");
+            storageStateJson = null;
+            usedCachedSession = false;
             if (consecutiveLoginLoopCount <= 2 && retryRemaining >= 45_000) {
               try {
                 await recreateSessionPage("login-loop recovery", true);

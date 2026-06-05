@@ -64,6 +64,24 @@ export async function loadMonitoringSession(
   }
 }
 
+/** 期限切れ・無効セッションを削除（login loop 時に再ログインさせる） */
+export async function clearMonitoringSession(
+  userId: string,
+  systemId: MonitoringSessionSystemId
+): Promise<void> {
+  try {
+    await prisma.monitoringSessionCache.deleteMany({
+      where: { userId, systemId },
+    });
+    logger.info("monitoringSessionCache: cleared", { userId, extra: { systemId } });
+  } catch (e) {
+    logger.warn("monitoringSessionCache: clear failed", {
+      userId,
+      extra: { systemId, error: e instanceof Error ? e.message : String(e) },
+    });
+  }
+}
+
 function cookieJsonToRuntimeString(cookieJson: string): string | undefined {
   try {
     const parsed = JSON.parse(cookieJson) as { cookies?: unknown[] };
