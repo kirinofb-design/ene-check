@@ -26,7 +26,9 @@ export const FUSION_SOLAR_STATION_MONTH_ATTEMPT_TIMEOUT_MS = 180_000;
 export const FUSION_SOLAR_STATION_MONTH_ATTEMPT_MIN_MS = 10_000;
 export const FUSION_SOLAR_LOGIN_COMPLETION_TIMEOUT_MS = 25_000;
 export const FUSION_SOLAR_LOGIN_FORM_HARD_TIMEOUT_MS = 70_000;
+/** Vercel 冷起動 Chromium は遅いため本番のみ長め */
 export const FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS = 20_000;
+export const FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_VERCEL_MS = 55_000;
 export const FUSION_SOLAR_REPORT_PAGE_READY_TIMEOUT_MS = 35_000;
 
 export function capCollectWallBudgetMs(ms: number): number {

@@ -5,14 +5,10 @@ import {
   runSmaDayChunks,
 } from "@/lib/browserChunkCollectors";
 
+import { getCollectChunkFetchTimeoutMs, shouldSplitFusionByStationClient } from "@/lib/collectClientEnv";
+
 const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
-
-/** Vercel（300s 制限あり）でのみ発電所分割。localhost 等は1リクエストで全発電所を取得して高速化。 */
-function shouldSplitFusionByStation(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.location.hostname.endsWith(".vercel.app");
-}
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 const LAPLACE_DAY_CHUNK = 3;
 const SMA_DAY_CHUNK = 1;
@@ -231,7 +227,7 @@ export async function runClientFullCollectOrchestration(params: {
       signal,
       stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
       windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
-      splitByStation: shouldSplitFusionByStation(),
+      splitByStation: shouldSplitFusionByStationClient(),
       resolveApiMessage,
       onSetInterrupted: (v) => {
         interrupted = v;

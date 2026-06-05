@@ -35,6 +35,7 @@ export async function POST(request: Request) {
     if (result.ok && result.storageStateJson) {
       if (systemId === "sunny-portal") {
         await saveSmaSessionFromStorageState(userId, result.storageStateJson);
+        await saveMonitoringSession(userId, "sunny-portal", result.storageStateJson);
       } else if (systemId === "fusion-solar") {
         await saveMonitoringSession(userId, "fusion-solar", result.storageStateJson);
       }

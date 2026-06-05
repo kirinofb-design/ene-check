@@ -10,6 +10,7 @@ import {
 } from "@/lib/browserChunkCollectors";
 import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
 import { shouldUseClientChunkedFullCollect } from "@/lib/collectAllClientStrategy";
+import { shouldSplitFusionByStationClient } from "@/lib/collectClientEnv";
 import {
   runClientFullCollectOrchestration,
   CLIENT_FULL_COLLECT_TOTAL_STEPS,
@@ -302,8 +303,7 @@ export default function DataCollectSection() {
           signal: new AbortController().signal,
           stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
           windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
-          splitByStation:
-            typeof window !== "undefined" && window.location.hostname.endsWith(".vercel.app"),
+          splitByStation: shouldSplitFusionByStationClient(),
           resolveApiMessage,
           onSetInterrupted: noop,
         });

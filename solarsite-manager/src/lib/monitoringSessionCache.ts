@@ -3,7 +3,8 @@ import { logger } from "@/lib/logger";
 
 export type MonitoringSessionSystemId = "fusion-solar" | "sunny-portal";
 
-const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
+/** 接続テスト・収集後のセッション再利用（本番で日をまたいでも切れにくくする） */
+const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function parseStorageStateCookies(sessionJson: string): number {
   try {
@@ -63,6 +64,42 @@ export async function loadMonitoringSession(
   }
 }
 
+function cookieJsonToRuntimeString(cookieJson: string): string | undefined {
+  try {
+    const parsed = JSON.parse(cookieJson) as { cookies?: unknown[] };
+    if (parsed && Array.isArray(parsed.cookies) && parsed.cookies.length > 0) {
+      return cookieJson;
+    }
+  } catch {
+    // legacy array
+  }
+  try {
+    const arr = JSON.parse(cookieJson) as unknown[];
+    if (Array.isArray(arr) && arr.length > 0) return cookieJson;
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
+/** SMA 用 Cookie（SmaCookieCache → MonitoringSessionCache の順で解決） */
+export async function resolveSmaCookieJsonForUser(userId: string): Promise<string | undefined> {
+  const row = await prisma.smaCookieCache.findFirst({
+    where: { userId, expiresAt: { gt: new Date() } },
+    select: { cookieJson: true },
+  });
+  if (row?.cookieJson) {
+    const runtime = cookieJsonToRuntimeString(row.cookieJson);
+    if (runtime) return runtime;
+  }
+  const fromMonitoring = await loadMonitoringSession(userId, "sunny-portal");
+  if (fromMonitoring) {
+    const runtime = cookieJsonToRuntimeString(fromMonitoring);
+    if (runtime) return runtime;
+  }
+  return undefined;
+}
+
 /** SMA は既存 SmaCookieCache を storageState 形式でも保存 */
 export async function saveSmaSessionFromStorageState(userId: string, storageStateJson: string): Promise<void> {
   const trimmed = storageStateJson.trim();
@@ -98,6 +135,7 @@ export async function saveSmaSessionFromStorageState(userId: string, storageStat
       update: { cookieJson, expiresAt },
     });
     logger.info("monitoringSessionCache: sma cookie cache updated from storageState", { userId });
+    await saveMonitoringSession(userId, "sunny-portal", cookieJson).catch(() => {});
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("userId_plantName") && !message.includes("SmaCookieCacheWhereUniqueInput")) {
@@ -109,5 +147,6 @@ export async function saveSmaSessionFromStorageState(userId: string, storageStat
       create: { userId, plantName: "", cookieJson, expiresAt },
       update: { cookieJson, expiresAt },
     });
+    await saveMonitoringSession(userId, "sunny-portal", cookieJson).catch(() => {});
   }
 }

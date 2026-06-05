@@ -2,7 +2,10 @@ import { runSmaCollectorCookie } from "@/lib/smaCollectorCookie";
 import { autoLogin } from "@/lib/autoLogin";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import { saveSmaSessionFromStorageState } from "@/lib/monitoringSessionCache";
+import {
+  resolveSmaCookieJsonForUser,
+  saveSmaSessionFromStorageState,
+} from "@/lib/monitoringSessionCache";
 import { isVercelRuntime } from "@/lib/playwrightRuntime";
 
 const SMA_COOKIE_ONLY_HINT =
@@ -84,34 +87,18 @@ export async function runSmaCollector(
   const end = parseYmdToUtcDate(endDate);
   if (!start || !end) return { ok: false, message: "日付形式が不正です", recordCount: 0, errorCount: 0 };
 
-  /** Vercel ではチャンクごとに autoLogin すると ERR_INSUFFICIENT_RESOURCES になりやすい */
-  const allowAutoLogin = options?.allowAutoLogin ?? !isVercelRuntime();
+  /**
+   * Vercel ではチャンクごとの autoLogin 連打は ERR_INSUFFICIENT_RESOURCES になりやすいが、
+   * Cookie 切れ時に 1 回だけ再ログインしてセッションを更新するのは許可する（本番復旧用）。
+   */
+  const isVercel = isVercelRuntime();
+  const allowAutoLogin = options?.allowAutoLogin ?? !isVercel;
+  const allowSessionRefresh = allowAutoLogin || isVercel;
 
-  const cachedSession = await prisma.smaCookieCache.findFirst({
-    where: { userId, expiresAt: { gt: new Date() } },
-    select: { id: true, cookieJson: true },
-  });
+  const runtimeFromCache = await resolveSmaCookieJsonForUser(userId);
+  const hasCachedSession = Boolean(runtimeFromCache);
 
-  const runtimeFromCache = (() => {
-    if (!cachedSession?.cookieJson) return undefined;
-    try {
-      const parsed = JSON.parse(cachedSession.cookieJson) as { cookies?: unknown[] };
-      if (parsed && Array.isArray(parsed.cookies) && parsed.cookies.length > 0) {
-        return cachedSession.cookieJson;
-      }
-    } catch {
-      // legacy array format
-      try {
-        const arr = JSON.parse(cachedSession.cookieJson) as unknown[];
-        if (Array.isArray(arr) && arr.length > 0) return cachedSession.cookieJson;
-      } catch {
-        // ignore
-      }
-    }
-    return undefined;
-  })();
-
-  if (!cachedSession && !allowAutoLogin) {
+  if (!hasCachedSession && !allowSessionRefresh) {
     return {
       ok: false,
       message: `SMA Cookie が未登録または期限切れです。${SMA_COOKIE_ONLY_HINT}`,
@@ -121,29 +108,26 @@ export async function runSmaCollector(
   }
 
   let cookieAttempt: Awaited<ReturnType<typeof runSmaCollectorCookie>> | null = null;
-  if (cachedSession) {
-    cookieAttempt = await runSmaCollectorCookie(
-      userId,
-      startDate,
-      endDate,
-      runtimeFromCache
-    );
+  if (hasCachedSession) {
+    cookieAttempt = await runSmaCollectorCookie(userId, startDate, endDate, runtimeFromCache);
     if (cookieAttempt.ok) {
       return cookieAttempt;
     }
-    if (!allowAutoLogin || !shouldAttemptAutoLoginAfterCookieFailure(cookieAttempt.message)) {
+    if (!allowSessionRefresh || !shouldAttemptAutoLoginAfterCookieFailure(cookieAttempt.message)) {
       return {
         ...cookieAttempt,
-        message: allowAutoLogin ? cookieAttempt.message : `${cookieAttempt.message}\n${SMA_COOKIE_ONLY_HINT}`,
+        message: allowAutoLogin
+          ? cookieAttempt.message
+          : `${cookieAttempt.message}\n${isVercel ? "本番: /settings で SMA 接続テストを実行してから再試行してください。" : SMA_COOKIE_ONLY_HINT}`,
       };
     }
     logger.warn("smaCollector: cached cookie run failed; attempting autoLogin refresh", {
       userId,
-      extra: { message: cookieAttempt.message },
+      extra: { message: cookieAttempt.message, isVercel },
     });
   }
 
-  if (!allowAutoLogin) {
+  if (!allowSessionRefresh) {
     return {
       ok: false,
       message: SMA_COOKIE_ONLY_HINT,
@@ -158,7 +142,7 @@ export async function runSmaCollector(
       userId,
       extra: { message: loginResult.message },
     });
-    if (!cachedSession) {
+    if (!hasCachedSession) {
       return {
         ok: false,
         message:
@@ -183,7 +167,7 @@ export async function runSmaCollector(
   const runtimeStorageStateJson = buildRuntimeStorageStateJson(loginResult.storageStateJson);
   if (!runtimeStorageStateJson) {
     logger.warn("smaCollector: no sunny portal cookies from autoLogin", { userId });
-    if (!cachedSession) {
+    if (!hasCachedSession) {
       return {
         ok: false,
         message:

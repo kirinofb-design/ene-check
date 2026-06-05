@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     }
     const userId = (session.user as { id: string }).id;
     const body = (await request.json()) as { formsLogin?: string; cookieJson?: string };
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     let cookieJson: string;
     if (typeof body?.cookieJson === "string" && body.cookieJson.trim().length > 0) {

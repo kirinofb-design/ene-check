@@ -1,5 +1,21 @@
+import { getCollectChunkFetchTimeoutMs } from "@/lib/collectClientEnv";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
+
+function collectFetchSignal(userSignal: AbortSignal): AbortSignal {
+  const timeoutMs = getCollectChunkFetchTimeoutMs();
+  if (!timeoutMs || typeof AbortSignal.timeout !== "function") return userSignal;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const merged = new AbortController();
+  const abortMerged = (reason?: unknown) => {
+    if (!merged.signal.aborted) merged.abort(reason);
+  };
+  userSignal.addEventListener("abort", () => abortMerged(userSignal.reason), { once: true });
+  timeoutSignal.addEventListener("abort", () => abortMerged(timeoutSignal.reason), { once: true });
+  if (userSignal.aborted) abortMerged(userSignal.reason);
+  if (timeoutSignal.aborted) abortMerged(timeoutSignal.reason);
+  return merged.signal;
+}
 
 const TRANSIENT_HTTP = new Set([408, 429, 502, 503, 504, 524]);
 
@@ -72,7 +88,7 @@ export async function fetchCollectPostJsonWithRetries(params: {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params.body),
-        signal: params.signal,
+        signal: collectFetchSignal(params.signal),
       });
       try {
         lastData = await lastRes.json();

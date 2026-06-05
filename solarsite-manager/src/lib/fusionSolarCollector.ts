@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { withPrismaRetry, PRISMA_RETRY_COLLECTOR } from "@/lib/withPrismaRetry";
 import { decryptSecret } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
-import { launchChromiumForRuntime } from "@/lib/playwrightRuntime";
+import { isVercelRuntime, launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { autoLogin } from "@/lib/autoLogin";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
 import type { Page } from "playwright-core";
@@ -10,6 +10,7 @@ import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import {
   capCollectWallBudgetMs,
   FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS,
+  FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_VERCEL_MS,
   FUSION_SOLAR_DEFAULT_WALL_BUDGET_MS,
   FUSION_SOLAR_LOGIN_COMPLETION_TIMEOUT_MS,
   FUSION_SOLAR_LOGIN_FORM_HARD_TIMEOUT_MS,
@@ -534,7 +535,9 @@ export async function runFusionSolarCollector(
     if (storageStateJson) {
       logger.info("fusionSolarCollector: using cached storageState from DB", { userId });
     }
-    const autoLoginTimeoutMs = FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS;
+    const autoLoginTimeoutMs = isVercelRuntime()
+      ? FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_VERCEL_MS
+      : FUSION_SOLAR_AUTO_LOGIN_TIMEOUT_MS;
     const timedAutoLogin = storageStateJson
       ? { systemId: "fusion-solar" as const, ok: true, storageStateJson, message: "cached session" }
       : await Promise.race([
