@@ -18,7 +18,7 @@ import {
   FUSION_SOLAR_STATION_MONTH_ATTEMPT_MIN_MS,
   FUSION_SOLAR_STATION_MONTH_ATTEMPT_TIMEOUT_MS,
 } from "@/lib/collectTimeouts";
-import { clearMonitoringSession, loadMonitoringSession, saveMonitoringSession } from "@/lib/monitoringSessionCache";
+import { clearMonitoringSession, ensureMonitoringSessionCacheTable, loadMonitoringSession, saveMonitoringSession } from "@/lib/monitoringSessionCache";
 
 const BASE_URL = "https://jp5.fusionsolar.huawei.com";
 const STATION_REPORT_URL_TEMPLATE = `${BASE_URL}/pvmswebsite/assets/build/index.html#/view/station/NE={ne}/report`;
@@ -32,6 +32,26 @@ const REPORT_PAGE_READY_TIMEOUT_MS = FUSION_SOLAR_REPORT_PAGE_READY_TIMEOUT_MS;
 const DEFAULT_STATION_MONTH_ATTEMPT_TIMEOUT_MS = FUSION_SOLAR_STATION_MONTH_ATTEMPT_TIMEOUT_MS;
 const MIN_STATION_MONTH_ATTEMPT_TIMEOUT_MS = FUSION_SOLAR_STATION_MONTH_ATTEMPT_MIN_MS;
 const LOGIN_COMPLETION_TIMEOUT_MS = FUSION_SOLAR_LOGIN_COMPLETION_TIMEOUT_MS;
+
+function urlLooksFusionLoggedIn(href: string): boolean {
+  const lower = href.toLowerCase();
+  if (href.includes("/unisso/login")) return false;
+  if (lower.includes("#/login")) return false;
+  if (lower.includes("/login") && lower.includes("unisso")) return false;
+  if (href.includes("/netecowebext/")) return true;
+  if (href.includes("/pvmswebsite/")) return true;
+  if (href.includes("/netecowebext/home")) return true;
+  return false;
+}
+
+async function pageLooksFusionLoggedIn(page: Page): Promise<boolean> {
+  if (urlLooksFusionLoggedIn(page.url())) return true;
+  if (await looksLikeLoginPage(page)) return false;
+  const hasLoginInput =
+    (await page.locator("input#username").count().catch(() => 0)) > 0 &&
+    (await page.locator("input#username").first().isVisible().catch(() => false));
+  return !hasLoginInput;
+}
 
 function isYmd(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -230,24 +250,12 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
   }
   await loginBtn.waitFor({ state: "visible", timeout: 20_000 });
 
-  const urlLooksLoggedIn = (u: URL) => {
-    const href = u.toString();
-    const lower = href.toLowerCase();
-    if (href.includes("/unisso/login")) return false;
-    if (lower.includes("#/login")) return false;
-    if (lower.includes("/login") && lower.includes("unisso")) return false;
-    if (href.includes("/netecowebext/")) return true;
-    if (href.includes("/pvmswebsite/")) return true;
-    if (href.includes("/netecowebext/home")) return true;
-    return false;
-  };
-
   const waitForLoggedInUrlWithCancel = async (timeoutMs: number): Promise<void> => {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
       throwIfAllCollectCancelled(userId);
       try {
-        await page.waitForURL(urlLooksLoggedIn, { timeout: 3_000 });
+        await page.waitForURL((u) => urlLooksFusionLoggedIn(u.toString()), { timeout: 3_000 });
         return;
       } catch {
         // retry with cancel check
@@ -276,8 +284,7 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
       throwIfAllCollectCancelled(userId);
       try {
         await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45_000 });
-        const current = page.url();
-        if (urlLooksLoggedIn(new URL(current))) {
+        if (urlLooksFusionLoggedIn(page.url())) {
           recovered = true;
           break;
         }
@@ -354,7 +361,7 @@ async function ensureFusionSessionAndReportReady(
       try {
         await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
         await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
-        if (!(await looksLikeLoginPage(page))) {
+        if (await pageLooksFusionLoggedIn(page)) {
           homeReached = true;
           break;
         }
@@ -364,13 +371,22 @@ async function ensureFusionSessionAndReportReady(
     }
 
     if (!homeReached) {
+      // home 経由が失敗しても report 直遷移が通ることがある（SSO 安定前の誤判定を避ける）
+      try {
+        await page.goto(stationReportUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+        if (!(await isSettledLoginPage(page))) return;
+      } catch {
+        // fall through to relogin
+      }
+
       logger.warn("fusionSolarCollector: home check failed, relogin", {
         userId,
         extra: { station: stationName, attempt },
       });
       await loginFusionSolar(page, loginId, password, userId);
       // ログイン直後は SSO セッションが安定するまで少し待つ（直後の report 遷移での再ログインループ防止）
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
       continue;
     }
 
@@ -531,6 +547,7 @@ export async function runFusionSolarCollector(
 
   try {
     throwIfAllCollectCancelled(userId);
+    await ensureMonitoringSessionCacheTable();
     let storageStateJson: string | null = await loadMonitoringSession(userId, "fusion-solar");
     if (storageStateJson) {
       logger.info("fusionSolarCollector: using cached storageState from DB", { userId });
@@ -633,7 +650,7 @@ export async function runFusionSolarCollector(
         try {
           await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
           await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
-          if (!(await looksLikeLoginPage(page))) {
+          if (await pageLooksFusionLoggedIn(page)) {
             await refreshStorageStateFromContext();
             return;
           }
@@ -1098,6 +1115,7 @@ export async function runFusionSolarCollector(
           );
           recordCount++;
         }
+        await refreshStorageStateFromContext();
       }
     }
 

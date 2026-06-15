@@ -1,4 +1,4 @@
-import { getCollectChunkFetchTimeoutMs, getFusionStationsPerVercelBatch } from "@/lib/collectClientEnv";
+import { getCollectChunkFetchTimeoutMs, getFusionStationsPerVercelBatch, getLocalFusionStationBatchSize } from "@/lib/collectClientEnv";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
 
@@ -206,9 +206,11 @@ export async function runFusionSolarDayWindowChunks(params: {
   signal: AbortSignal;
   /** 1発電所×1日を処理する station ルート（Vercel 300s 制限に確実に収めるため） */
   stationPostUrl: string;
-  /** 1日×全発電所をまとめて処理する window ルート（localhost 等 300s 制限が無い環境向け） */
+  /** 1日×全発電所をまとめて処理する window ルート（Vercel バッチ向け） */
   windowPostUrl: string;
-  /** true=発電所ごとに分割（Vercel）、false=1日1リクエストで全発電所（localhost） */
+  /** 期間全体を1リクエストで取得するルート（localhost 向け） */
+  fullRangePostUrl?: string;
+  /** true=発電所ごとに分割（Vercel）、false=期間一括（localhost） */
   splitByStation: boolean;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
@@ -222,9 +224,17 @@ export async function runFusionSolarDayWindowChunks(params: {
     };
   }
 
-  // localhost 等は1日1リクエストで全発電所を取得（ログイン1回・ブラウザ起動1回で高速）
+  // localhost 等は期間全体を1リクエスト（月内は発電所×月のみで日数に比例しない）
   if (!params.splitByStation) {
-    return await runFusionWindowPerDay({ ...params, slices });
+    return await runFusionFullRangeStationBatches({
+      rangeStart: params.rangeStart,
+      rangeEnd: params.rangeEnd,
+      fullRangePostUrl: params.fullRangePostUrl ?? "/api/collect/fusion-solar",
+      signal: params.signal,
+      resolveApiMessage: params.resolveApiMessage,
+      onSetInterrupted: params.onSetInterrupted,
+      onChunkProgress: params.onChunkProgress,
+    });
   }
 
   /**
@@ -370,7 +380,217 @@ export async function runFusionSolarDayWindowChunks(params: {
   };
 }
 
-/** 1日＝1リクエスト（サーバ側で全発電所をまとめて処理。localhost 等 300s 制限が無い環境向け）。 */
+/** 指定期間を発電所バッチごとに full-range API で取得（localhost 向け） */
+async function runFusionFullRangeStationBatches(params: {
+  rangeStart: string;
+  rangeEnd: string;
+  fullRangePostUrl: string;
+  signal: AbortSignal;
+  resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
+  onSetInterrupted: (v: boolean) => void;
+  onChunkProgress?: (p: CollectChunkProgress) => void;
+}): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
+  const batchSize = getLocalFusionStationBatchSize();
+  const batches: { stationNes: string[]; label: string }[] = [];
+  for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i += batchSize) {
+    const chunk = FUSION_SOLAR_STATIONS.slice(i, i + batchSize);
+    batches.push({
+      stationNes: chunk.map((s) => s.ne),
+      label: `${params.rangeStart}〜${params.rangeEnd}（${chunk.length}発電所）`,
+    });
+  }
+
+  if (batches.length === 1) {
+    return runFusionFullRangeOnce({ ...params, stationNes: batches[0]!.stationNes, batchLabel: batches[0]!.label });
+  }
+
+  let totalRec = 0;
+  let totalErr = 0;
+  const failures: string[] = [];
+  let batchIdx = 0;
+
+  for (const batch of batches) {
+    if (params.signal.aborted) {
+      params.onSetInterrupted(true);
+      return {
+        step: {
+          key: "fusion-solar",
+          ok: failures.length === 0,
+          message:
+            failures.length > 0
+              ? `中断。一部失敗:\n${failures.join("\n")}`
+              : "FusionSolar 取得が中断されました。",
+          recordCount: totalRec,
+          errorCount: totalErr,
+        },
+        flowAborted: true,
+      };
+    }
+
+    if (batchIdx > 0) {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    batchIdx++;
+    params.onChunkProgress?.({
+      chunkIndex: batchIdx,
+      chunkTotal: batches.length,
+      label: batch.label,
+    });
+
+    const result = await runFusionFullRangeOnce({
+      ...params,
+      stationNes: batch.stationNes,
+      batchLabel: batch.label,
+      skipProgress: true,
+    });
+    totalRec += result.step.recordCount;
+    totalErr += result.step.errorCount;
+    if (!result.step.ok) {
+      failures.push(`${batch.label}: ${result.step.message}`);
+    }
+    if (result.flowAborted) {
+      params.onSetInterrupted(true);
+      return {
+        step: {
+          key: "fusion-solar",
+          ok: failures.length === 0,
+          message:
+            failures.length > 0
+              ? `FusionSolar: 一部失敗（${failures.length}件）。\n${failures.join("\n")}`
+              : "FusionSolar 取得が中断されました。",
+          recordCount: totalRec,
+          errorCount: totalErr,
+        },
+        flowAborted: true,
+      };
+    }
+  }
+
+  return {
+    step: {
+      key: "fusion-solar",
+      ok: failures.length === 0,
+      message:
+        failures.length === 0
+          ? `FusionSolar: ${params.rangeStart}〜${params.rangeEnd} を${batches.length}バッチ（計${FUSION_SOLAR_STATIONS.length}発電所）で取得しました。`
+          : `FusionSolar: 一部失敗（${failures.length}件）。\n${failures.slice(0, 6).join("\n")}${
+              failures.length > 6 ? "\n…他省略" : ""
+            }`,
+      recordCount: totalRec,
+      errorCount: totalErr,
+    },
+    flowAborted: false,
+  };
+}
+
+/** 指定期間×発電所バッチを1リクエストで取得 */
+async function runFusionFullRangeOnce(params: {
+  rangeStart: string;
+  rangeEnd: string;
+  fullRangePostUrl: string;
+  signal: AbortSignal;
+  resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
+  onSetInterrupted: (v: boolean) => void;
+  onChunkProgress?: (p: CollectChunkProgress) => void;
+  stationNes?: string[];
+  batchLabel?: string;
+  skipProgress?: boolean;
+}): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
+  const label = params.batchLabel ?? `${params.rangeStart}〜${params.rangeEnd}`;
+  if (!params.skipProgress) {
+    params.onChunkProgress?.({ chunkIndex: 1, chunkTotal: 1, label });
+  }
+
+  if (params.signal.aborted) {
+    params.onSetInterrupted(true);
+    return {
+      step: {
+        key: "fusion-solar",
+        ok: false,
+        message: "FusionSolar 取得が中断されました。",
+        recordCount: 0,
+        errorCount: 0,
+      },
+      flowAborted: true,
+    };
+  }
+
+  const body: Record<string, unknown> = {
+    startDate: params.rangeStart,
+    endDate: params.rangeEnd,
+  };
+  if (params.stationNes && params.stationNes.length > 0) {
+    body.stationNeList = params.stationNes;
+  }
+
+  try {
+    const out = await fetchCollectPostJsonWithRetries({
+      url: params.fullRangePostUrl,
+      body,
+      signal: params.signal,
+      maxAttempts: 5,
+    });
+    const ok = Boolean(
+      out.res.ok &&
+        out.data &&
+        typeof out.data === "object" &&
+        (out.data as { ok?: boolean }).ok === true
+    );
+    const msg = params.resolveApiMessage(
+      out.data,
+      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+      out.res.status
+    );
+    const rec =
+      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+        ? (out.data as { recordCount: number }).recordCount
+        : 0;
+    const err =
+      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+        ? (out.data as { errorCount: number }).errorCount
+        : 0;
+    return {
+      step: {
+        key: "fusion-solar",
+        ok,
+        message: ok
+          ? params.stationNes && params.stationNes.length > 0
+            ? `FusionSolar: ${label} を取得しました。`
+            : `FusionSolar: ${label} を1リクエストで取得しました（全${FUSION_SOLAR_STATIONS.length}発電所）。`
+          : `FusionSolar: ${label} の取得に失敗しました。\n${msg}`,
+        recordCount: rec,
+        errorCount: err,
+      },
+      flowAborted: false,
+    };
+  } catch (e) {
+    if (isAbortError(e)) {
+      params.onSetInterrupted(true);
+      return {
+        step: {
+          key: "fusion-solar",
+          ok: false,
+          message: "FusionSolar 取得が中断されました。",
+          recordCount: 0,
+          errorCount: 0,
+        },
+        flowAborted: true,
+      };
+    }
+    return {
+      step: {
+        key: "fusion-solar",
+        ok: false,
+        message: e instanceof Error ? e.message : String(e),
+        recordCount: 0,
+        errorCount: 0,
+      },
+      flowAborted: false,
+    };
+  }
+}
+
+/** 1日＝1リクエスト（window API 専用。Vercel バッチ以外では使わない） */
 async function runFusionWindowPerDay(params: {
   slices: DateSlice[];
   signal: AbortSignal;
@@ -490,6 +710,7 @@ export async function runSmaDayChunks(params: {
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
   maxDaysPerChunk?: number;
+  betweenChunksMs?: number;
   onChunkProgress?: (p: CollectChunkProgress) => void;
 }): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
   const span = params.maxDaysPerChunk ?? SMA_DAYS_PER_CHUNK_DEFAULT;
@@ -525,7 +746,7 @@ export async function runSmaDayChunks(params: {
     }
 
     if (reqIndex > 0) {
-      await new Promise((r) => setTimeout(r, 4500));
+      await new Promise((r) => setTimeout(r, params.betweenChunksMs ?? 4500));
     }
     reqIndex++;
     params.onChunkProgress?.({
@@ -610,6 +831,7 @@ export async function runLaplaceDayChunks(params: {
   laplacePostUrl: string;
   prewarmPostUrl: string;
   maxDaysPerChunk: number;
+  betweenChunksMs?: number;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
   onChunkProgress?: (p: CollectChunkProgress) => void;
@@ -680,7 +902,7 @@ export async function runLaplaceDayChunks(params: {
     await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
     if (chunkIdx > 0) {
       // Vercel 連続起動で Chromium が閉じたり /tmp が枯渇しやすいため長めに空ける
-      await new Promise((r) => setTimeout(r, 8000));
+      await new Promise((r) => setTimeout(r, params.betweenChunksMs ?? 8000));
     }
     chunkIdx++;
     params.onChunkProgress?.({

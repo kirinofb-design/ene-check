@@ -6,6 +6,46 @@ export type MonitoringSessionSystemId = "fusion-solar" | "sunny-portal";
 /** 接続テスト・収集後のセッション再利用（本番で日をまたいでも切れにくくする） */
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+let monitoringSessionCacheTableEnsured = false;
+
+function isMissingMonitoringSessionCacheTableError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.includes("MonitoringSessionCache") && msg.includes("does not exist");
+}
+
+/** マイグレーション履歴と実テーブルがずれた DB 向け（冪等） */
+export async function ensureMonitoringSessionCacheTable(): Promise<void> {
+  if (monitoringSessionCacheTableEnsured) return;
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "MonitoringSessionCache" (
+        "id" TEXT NOT NULL,
+        "userId" TEXT NOT NULL,
+        "systemId" TEXT NOT NULL,
+        "sessionJson" TEXT NOT NULL,
+        "expiresAt" TIMESTAMP(3) NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "MonitoringSessionCache_pkey" PRIMARY KEY ("id")
+      )
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "MonitoringSessionCache_userId_systemId_key"
+      ON "MonitoringSessionCache"("userId", "systemId")
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "MonitoringSessionCache_systemId_idx"
+      ON "MonitoringSessionCache"("systemId")
+    `);
+    monitoringSessionCacheTableEnsured = true;
+    logger.info("monitoringSessionCache: table ensured");
+  } catch (e) {
+    logger.warn("monitoringSessionCache: ensure table failed", {
+      extra: { error: e instanceof Error ? e.message : String(e) },
+    });
+  }
+}
+
 function parseStorageStateCookies(sessionJson: string): number {
   try {
     const parsed = JSON.parse(sessionJson) as { cookies?: unknown[] };
@@ -35,6 +75,27 @@ export async function saveMonitoringSession(
     });
     logger.info("monitoringSessionCache: saved", { userId, extra: { systemId, expiresAt: expiresAt.toISOString() } });
   } catch (e) {
+    if (isMissingMonitoringSessionCacheTableError(e)) {
+      await ensureMonitoringSessionCacheTable();
+      try {
+        await prisma.monitoringSessionCache.upsert({
+          where: { userId_systemId: { userId, systemId } },
+          create: { userId, systemId, sessionJson: trimmed, expiresAt },
+          update: { sessionJson: trimmed, expiresAt },
+        });
+        logger.info("monitoringSessionCache: saved after table ensure", {
+          userId,
+          extra: { systemId, expiresAt: expiresAt.toISOString() },
+        });
+        return;
+      } catch (retryErr) {
+        logger.warn("monitoringSessionCache: save failed after ensure", {
+          userId,
+          extra: { systemId, error: retryErr instanceof Error ? retryErr.message : String(retryErr) },
+        });
+        return;
+      }
+    }
     logger.warn("monitoringSessionCache: save failed", {
       userId,
       extra: { systemId, error: e instanceof Error ? e.message : String(e) },
@@ -55,6 +116,10 @@ export async function loadMonitoringSession(
     if (parseStorageStateCookies(row.sessionJson) === 0) return null;
     return row.sessionJson;
   } catch (e) {
+    if (isMissingMonitoringSessionCacheTableError(e)) {
+      await ensureMonitoringSessionCacheTable();
+      return null;
+    }
     // テーブル未作成・接続不調でもコレクター全体を落とさず autoLogin にフォールバック
     logger.warn("monitoringSessionCache: load failed (fallback to autoLogin)", {
       userId,
@@ -75,6 +140,10 @@ export async function clearMonitoringSession(
     });
     logger.info("monitoringSessionCache: cleared", { userId, extra: { systemId } });
   } catch (e) {
+    if (isMissingMonitoringSessionCacheTableError(e)) {
+      await ensureMonitoringSessionCacheTable();
+      return;
+    }
     logger.warn("monitoringSessionCache: clear failed", {
       userId,
       extra: { systemId, error: e instanceof Error ? e.message : String(e) },

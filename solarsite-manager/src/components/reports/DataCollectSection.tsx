@@ -10,7 +10,14 @@ import {
 } from "@/lib/browserChunkCollectors";
 import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
 import { shouldUseClientChunkedFullCollect } from "@/lib/collectAllClientStrategy";
-import { shouldSplitFusionByStationClient } from "@/lib/collectClientEnv";
+import {
+  FUSION_SOLAR_FULL_RANGE_POST_URL,
+  getLaplaceChunkDelayMs,
+  getLaplaceDaysPerChunk,
+  getSmaChunkDelayMs,
+  getSmaDaysPerChunk,
+  shouldSplitFusionByStationClient,
+} from "@/lib/collectClientEnv";
 import {
   runClientFullCollectOrchestration,
   CLIENT_FULL_COLLECT_TOTAL_STEPS,
@@ -20,9 +27,6 @@ import {
 const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
-/** ラプラス・SMA いずれも「1リクエスト短め」にして Hobby の約10秒制限を避ける */
-const LAPLACE_DAY_CHUNK = 3;
-const SMA_DAY_CHUNK = 1;
 
 const reportsCardFooterShell: React.CSSProperties = {
   borderTop: "1px solid #f1f5f9",
@@ -284,7 +288,8 @@ export default function DataCollectSection() {
           smaPostUrl: endpointBySystem.SMA,
           resolveApiMessage,
           onSetInterrupted: noop,
-          maxDaysPerChunk: SMA_DAY_CHUNK,
+          maxDaysPerChunk: getSmaDaysPerChunk(),
+          betweenChunksMs: getSmaChunkDelayMs(),
         });
         const detail = `（保存 ${step.recordCount} 件 / スキップ ${step.errorCount} 件）`;
         if (step.ok) {
@@ -303,6 +308,7 @@ export default function DataCollectSection() {
           signal: new AbortController().signal,
           stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
           windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
+          fullRangePostUrl: FUSION_SOLAR_FULL_RANGE_POST_URL,
           splitByStation: shouldSplitFusionByStationClient(),
           resolveApiMessage,
           onSetInterrupted: noop,
@@ -324,7 +330,8 @@ export default function DataCollectSection() {
           signal: new AbortController().signal,
           laplacePostUrl: endpointBySystem.ラプラス,
           prewarmPostUrl: COLLECT_PREWARM_URL,
-          maxDaysPerChunk: LAPLACE_DAY_CHUNK,
+          maxDaysPerChunk: getLaplaceDaysPerChunk(),
+          betweenChunksMs: getLaplaceChunkDelayMs(),
           resolveApiMessage,
           onSetInterrupted: noop,
         });

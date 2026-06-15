@@ -4,6 +4,8 @@ import { handleApiError } from "@/lib/apiError";
 import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
+import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
+import { isKnownFusionStationNe } from "@/lib/fusionSolarStations";
 
 export const maxDuration = 300;
 
@@ -13,7 +15,7 @@ export async function POST(request: Request) {
     const userId = (session.user as { id?: string })?.id;
     if (!userId) {
       return NextResponse.json(
-        { error: { code: "UNAUTHORIZED", message: "??????????" } },
+        { error: { code: "UNAUTHORIZED", message: "ログインが必要です。" } },
         { status: 401 }
       );
     }
@@ -21,9 +23,29 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       startDate?: string;
       endDate?: string;
+      /** 省略時は全発電所。localhost バッチ取得用 */
+      stationNeList?: string[];
     };
     const startDate = typeof body?.startDate === "string" ? body.startDate : "";
     const endDate = typeof body?.endDate === "string" ? body.endDate : "";
+    const stationNeList = Array.isArray(body?.stationNeList)
+      ? body.stationNeList.filter((n): n is string => typeof n === "string" && n.trim().length > 0)
+      : undefined;
+
+    if (stationNeList && stationNeList.length > 0) {
+      const invalid = stationNeList.filter((ne) => !isKnownFusionStationNe(ne));
+      if (invalid.length > 0) {
+        return NextResponse.json(
+          {
+            ok: false,
+            message: `stationNeList に未知の NE があります: ${invalid.join(", ")}`,
+            recordCount: 0,
+            errorCount: 0,
+          },
+          { status: 400 }
+        );
+      }
+    }
 
     try {
       await ensureDbReachable();
@@ -54,7 +76,11 @@ export async function POST(request: Request) {
 
     let result;
     try {
-      result = await runFusionSolarCollector(userId, startDate, endDate);
+      const wallBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
+      result = await runFusionSolarCollector(userId, startDate, endDate, {
+        wallBudgetMs,
+        stationNeAllowList: stationNeList && stationNeList.length > 0 ? stationNeList : undefined,
+      });
     } finally {
       releaseCollectorLock(userId, "fusion-solar");
     }
@@ -69,4 +95,3 @@ export async function POST(request: Request) {
     return handleApiError(request, e);
   }
 }
-

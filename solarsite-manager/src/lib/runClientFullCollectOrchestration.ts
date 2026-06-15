@@ -5,20 +5,19 @@ import {
   runSmaDayChunks,
 } from "@/lib/browserChunkCollectors";
 
-import { getCollectChunkFetchTimeoutMs, shouldSplitFusionByStationClient } from "@/lib/collectClientEnv";
+import {
+  FUSION_SOLAR_FULL_RANGE_POST_URL,
+  getLaplaceChunkDelayMs,
+  getLaplaceDaysPerChunk,
+  getOrchestrationChillMs,
+  getSmaChunkDelayMs,
+  getSmaDaysPerChunk,
+  shouldSplitFusionByStationClient,
+} from "@/lib/collectClientEnv";
 
 const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
-const LAPLACE_DAY_CHUNK = 3;
-const SMA_DAY_CHUNK = 1;
-
-/** Vercel 上で Chromium を連続起動すると閉じる・枯減しやすいため、コレクター境界で空ける（ms） */
-const CHILL_AFTER_ECO_MS = 2800;
-const CHILL_AFTER_SMA_MS = 5500;
-const CHILL_AFTER_LAPLACE_MS = 4500;
-const CHILL_BEFORE_FUSION_MS = 3200;
-const CHILL_BETWEEN_SOLAR_MONITORS_MS = 2000;
 
 function sleepClientOrchestration(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
@@ -73,6 +72,7 @@ export async function runClientFullCollectOrchestration(params: {
   const { range, signal, endpointBySystem, resolveApiMessage, onProgress } = params;
   const steps: ClientAllCollectStep[] = [];
   let interrupted = false;
+  const chillMs = getOrchestrationChillMs();
 
   const isAbortError = (e: unknown): boolean =>
     (e instanceof DOMException && e.name === "AbortError") ||
@@ -159,7 +159,7 @@ export async function runClientFullCollectOrchestration(params: {
     await fetchOneSystemStep({ key: "eco-megane", button: "eco-megane" });
   }
   if (!interrupted && !signal.aborted) {
-    await chill(CHILL_AFTER_ECO_MS);
+    await chill(chillMs.afterEco);
     await prewarmCollectChromium(signal);
   }
   if (!interrupted && !signal.aborted) {
@@ -173,14 +173,15 @@ export async function runClientFullCollectOrchestration(params: {
       onSetInterrupted: (v) => {
         interrupted = v;
       },
-      maxDaysPerChunk: SMA_DAY_CHUNK,
+      maxDaysPerChunk: getSmaDaysPerChunk(),
+      betweenChunksMs: getSmaChunkDelayMs(),
       onChunkProgress: (p) => notify(1, "sma", `SMA ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
     });
     steps.push(sma.step);
     if (sma.flowAborted) interrupted = true;
   }
   if (!interrupted && !signal.aborted) {
-    await chill(CHILL_AFTER_SMA_MS);
+    await chill(chillMs.afterSma);
     await prewarmCollectChromium(signal);
   }
   if (!interrupted && !signal.aborted) {
@@ -191,7 +192,8 @@ export async function runClientFullCollectOrchestration(params: {
       signal,
       laplacePostUrl: endpointBySystem.ラプラス,
       prewarmPostUrl: COLLECT_PREWARM_URL,
-      maxDaysPerChunk: LAPLACE_DAY_CHUNK,
+      maxDaysPerChunk: getLaplaceDaysPerChunk(),
+      betweenChunksMs: getLaplaceChunkDelayMs(),
       resolveApiMessage,
       onSetInterrupted: (v) => {
         interrupted = v;
@@ -202,21 +204,21 @@ export async function runClientFullCollectOrchestration(params: {
     if (lap.flowAborted) interrupted = true;
   }
   if (!interrupted && !signal.aborted) {
-    await chill(CHILL_AFTER_LAPLACE_MS);
+    await chill(chillMs.afterLaplace);
   }
   if (!interrupted && !signal.aborted) {
     notify(3, "solar-monitor-sf");
     await fetchOneSystemStep({ key: "solar-monitor-sf", button: "池新田・本社" });
   }
   if (!interrupted && !signal.aborted) {
-    await chill(CHILL_BETWEEN_SOLAR_MONITORS_MS);
+    await chill(chillMs.betweenMonitors);
   }
   if (!interrupted && !signal.aborted) {
     notify(4, "solar-monitor-se");
     await fetchOneSystemStep({ key: "solar-monitor-se", button: "須山" });
   }
   if (!interrupted && !signal.aborted) {
-    await chill(CHILL_BEFORE_FUSION_MS);
+    await chill(chillMs.beforeFusion);
     await prewarmCollectChromium(signal);
   }
   if (!interrupted && !signal.aborted) {
@@ -227,6 +229,7 @@ export async function runClientFullCollectOrchestration(params: {
       signal,
       stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
       windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
+      fullRangePostUrl: FUSION_SOLAR_FULL_RANGE_POST_URL,
       splitByStation: shouldSplitFusionByStationClient(),
       resolveApiMessage,
       onSetInterrupted: (v) => {
