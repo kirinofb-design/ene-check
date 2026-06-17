@@ -290,6 +290,101 @@ export async function runFusionSolarDayWindowChunks(params: {
     return { ok, msg, rec, err, label: b.label };
   };
 
+  const runOneStation = async (paramsOne: {
+    startDate: string;
+    endDate: string;
+    stationNe: string;
+    label: string;
+  }): Promise<SliceCollectOutcome> => {
+    const out = await fetchCollectPostJsonWithRetries({
+      url: params.stationPostUrl,
+      body: { startDate: paramsOne.startDate, endDate: paramsOne.endDate, stationNe: paramsOne.stationNe },
+      signal: params.signal,
+      maxAttempts: 4,
+    });
+    const ok = Boolean(
+      out.res.ok &&
+        out.data &&
+        typeof out.data === "object" &&
+        (out.data as { ok?: boolean }).ok === true
+    );
+    const msg = params.resolveApiMessage(
+      out.data,
+      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+      out.res.status
+    );
+    const rec =
+      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+        ? (out.data as { recordCount: number }).recordCount
+        : 0;
+    const err =
+      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+        ? (out.data as { errorCount: number }).errorCount
+        : 0;
+    return { ok, msg, rec, err, label: paramsOne.label };
+  };
+
+  const runBatchByStationFallback = async (b: FusionBatch): Promise<SliceCollectOutcome> => {
+    let totalRec = 0;
+    let totalErr = 0;
+    const stationFailures: string[] = [];
+    for (let i = 0; i < b.stationNes.length; i++) {
+      if (params.signal.aborted) {
+        return { ok: false, msg: "中断されました。", rec: totalRec, err: totalErr, label: b.label };
+      }
+      if (i > 0) await new Promise((r) => setTimeout(r, 1200));
+      const ne = b.stationNes[i]!;
+      const one = await runOneStation({
+        startDate: b.startDate,
+        endDate: b.endDate,
+        stationNe: ne,
+        label: `${b.label} / NE=${ne}`,
+      });
+      totalRec += one.rec;
+      totalErr += one.err;
+      if (!one.ok) {
+        stationFailures.push(`NE=${ne}: ${one.msg}`);
+      }
+    }
+    return {
+      ok: stationFailures.length === 0,
+      msg:
+        stationFailures.length === 0
+          ? `${b.label}: window失敗時のstationフォールバックで回復`
+          : `${b.label}: stationフォールバックも一部失敗\n${stationFailures.join("\n")}`,
+      rec: totalRec,
+      err: totalErr,
+      label: b.label,
+    };
+  };
+
+  const runOneBatchWithFallback = async (b: FusionBatch): Promise<SliceCollectOutcome> => {
+    try {
+      const win = await runOneBatch(b);
+      if (win.ok) return win;
+      const fallback = await runBatchByStationFallback(b);
+      if (fallback.ok) return fallback;
+      return {
+        ok: false,
+        msg: `${win.msg}\n${fallback.msg}`,
+        rec: fallback.rec,
+        err: fallback.err,
+        label: b.label,
+      };
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+      const fallback = await runBatchByStationFallback(b);
+      if (fallback.ok) return fallback;
+      return {
+        ok: false,
+        msg: `${e instanceof Error ? e.message : String(e)}\n${fallback.msg}`,
+        rec: fallback.rec,
+        err: fallback.err,
+        label: b.label,
+      };
+    }
+  };
+
   const abortedStep = (): { step: ChunkCollectStep; flowAborted: boolean } => {
     params.onSetInterrupted(true);
     return {
@@ -321,7 +416,7 @@ export async function runFusionSolarDayWindowChunks(params: {
     });
 
     try {
-      const result = await runOneBatch(b);
+      const result = await runOneBatchWithFallback(b);
       totalRec += result.rec;
       totalErr += result.err;
       if (!result.ok) {
@@ -342,7 +437,7 @@ export async function runFusionSolarDayWindowChunks(params: {
       if (params.signal.aborted) break;
       await new Promise((r) => setTimeout(r, 2000));
       try {
-        const result = await runOneBatch(b);
+        const result = await runOneBatchWithFallback(b);
         totalRec += result.rec;
         totalErr += result.err;
         if (result.ok) recovered.add(result.label);
