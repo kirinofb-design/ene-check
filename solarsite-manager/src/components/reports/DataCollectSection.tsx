@@ -16,8 +16,13 @@ import {
   getLaplaceDaysPerChunk,
   getSmaChunkDelayMs,
   getSmaDaysPerChunk,
+  isVercelHostedClient,
   shouldSplitFusionByStationClient,
 } from "@/lib/collectClientEnv";
+import {
+  formatProdCollectTimeHint,
+  fusionChunkStallWarning,
+} from "@/lib/collectProgressUi";
 import {
   runClientFullCollectOrchestration,
   CLIENT_FULL_COLLECT_TOTAL_STEPS,
@@ -52,6 +57,12 @@ export default function DataCollectSection() {
   const allCollectAbortRef = useRef<AbortController | null>(null);
   const allClientOrchestrationActiveRef = useRef(false);
   const clientAllProgressForUiRef = useRef<ClientAllCollectProgress | null>(null);
+  const fusionChunkProgressRef = useRef<{ key: string; changedAt: number }>({ key: "", changedAt: 0 });
+  const [prodTimeHint, setProdTimeHint] = useState<string | null>(() =>
+    typeof window !== "undefined" && isVercelHostedClient()
+      ? formatProdCollectTimeHint(defaultCollectDateRange().startDate, defaultCollectDateRange().endDate)
+      : null
+  );
 
   const endpointBySystem: Record<string, string> = {
     "eco-megane": "/api/collect/eco-megane",
@@ -136,14 +147,42 @@ export default function DataCollectSection() {
     return fallback;
   };
 
+  useEffect(() => {
+    if (isVercelHostedClient()) {
+      setProdTimeHint(formatProdCollectTimeHint(range.startDate, range.endDate));
+    } else {
+      setProdTimeHint(null);
+    }
+  }, [range.startDate, range.endDate]);
+
   const formatClientOrchestrationLockMessage = (p: ClientAllCollectProgress, parallel: string) => {
     const label =
       p.currentStepKey === "post-finalize"
         ? "後処理・ミラー同期"
         : collectorStepLabel[p.currentStepKey] ?? p.currentStepKey;
     const detail = p.detail ? `・${p.detail}` : "";
+    const stall =
+      p.currentStepKey === "fusion-solar" && fusionChunkProgressRef.current.key
+        ? fusionChunkStallWarning(
+            p.currentStepKey,
+            fusionChunkProgressRef.current.key,
+            fusionChunkProgressRef.current.changedAt
+          )
+        : null;
     const line = `実行中（排他ロック中）です。完了してから再実行してください。（進捗 ${p.completedSteps}/${p.totalSteps}・実行中: ${label}${detail}）`;
-    return parallel ? `${line}${parallel}` : line;
+    const parts = [line, stall, parallel ? parallel.replace(/^\n\n/, "") : ""].filter(Boolean);
+    return parts.join("\n\n");
+  };
+
+  const trackFusionChunkProgress = (p: ClientAllCollectProgress) => {
+    if (p.currentStepKey === "fusion-solar" && p.detail) {
+      const key = p.detail;
+      if (key !== fusionChunkProgressRef.current.key) {
+        fusionChunkProgressRef.current = { key, changedAt: Date.now() };
+      }
+    } else if (p.currentStepKey !== "fusion-solar") {
+      fusionChunkProgressRef.current = { key: "", changedAt: 0 };
+    }
   };
 
   const handleCollect = async (systemName: string) => {
@@ -163,6 +202,7 @@ export default function DataCollectSection() {
             currentStepKey: "eco-megane",
           };
           clientAllProgressForUiRef.current = initialProgress;
+          fusionChunkProgressRef.current = { key: "", changedAt: 0 };
           setAllLocked(true);
           setRunningKind("all");
           setLockMessage(formatClientOrchestrationLockMessage(initialProgress, ""));
@@ -179,6 +219,7 @@ export default function DataCollectSection() {
               resolveApiMessage,
               onProgress: (p) => {
                 clientAllProgressForUiRef.current = p;
+                trackFusionChunkProgress(p);
                 setAllLocked(true);
                 setRunningKind("all");
                 setLockMessage(formatClientOrchestrationLockMessage(p, ""));
@@ -421,6 +462,16 @@ export default function DataCollectSection() {
   };
 
   useEffect(() => {
+    if (!allLocked || !allClientOrchestrationActiveRef.current) return;
+    const timer = setInterval(() => {
+      const p = clientAllProgressForUiRef.current;
+      if (!p) return;
+      setLockMessage(formatClientOrchestrationLockMessage(p, ""));
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [allLocked]);
+
+  useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const RUNNING_POLL_MS = 3000;
@@ -619,6 +670,12 @@ export default function DataCollectSection() {
             />
           </div>
         </div>
+
+        {prodTimeHint ? (
+          <p style={{ fontSize: "11px", color: "#64748b", margin: "0 0 16px", lineHeight: 1.5 }}>
+            {prodTimeHint}
+          </p>
+        ) : null}
 
         <div style={{ marginBottom: '24px' }}>
           <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', color: '#64748b', marginBottom: '8px' }}>個別システム取得</label>

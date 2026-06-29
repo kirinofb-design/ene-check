@@ -1,4 +1,9 @@
-import { getCollectChunkFetchTimeoutMs, getFusionStationsPerVercelBatch, getLocalFusionStationBatchSize } from "@/lib/collectClientEnv";
+import {
+  getCollectChunkFetchTimeoutMs,
+  getFusionDaysPerVercelPeriodChunk,
+  getFusionStationsPerVercelBatch,
+  getLocalFusionStationBatchSize,
+} from "@/lib/collectClientEnv";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
 
@@ -198,7 +203,6 @@ async function retryFailedDateSlices(params: {
 }
 
 /** ブラウザからのみ import すること（fetch を使用） */
-type FusionBatch = { startDate: string; endDate: string; stationNes: string[]; label: string };
 
 export async function runFusionSolarDayWindowChunks(params: {
   rangeStart: string;
@@ -237,94 +241,89 @@ export async function runFusionSolarDayWindowChunks(params: {
     });
   }
 
-  /**
-   * Vercel は 300s 制限のため、1日×複数発電所を window API でまとめて取得（ログイン1回／バッチ）。
-   * 1発電所1リクエストだと32回起動しセッション切れ・login loop が多発するため。
-   */
+  // Vercel 本番: 期間（7日）×4発電所の full-range API（日次 window より大幅に少ないリクエスト数）
+  if (params.splitByStation) {
+    return await runFusionVercelPeriodStationBatches({
+      rangeStart: params.rangeStart,
+      rangeEnd: params.rangeEnd,
+      fullRangePostUrl: params.fullRangePostUrl ?? "/api/collect/fusion-solar",
+      stationPostUrl: params.stationPostUrl,
+      signal: params.signal,
+      resolveApiMessage: params.resolveApiMessage,
+      onSetInterrupted: params.onSetInterrupted,
+      onChunkProgress: params.onChunkProgress,
+    });
+  }
+
+  return {
+    step: { key: "fusion-solar", ok: false, message: "内部エラー: Fusion 分割モードが未設定です。", recordCount: 0, errorCount: 0 },
+    flowAborted: false,
+  };
+}
+
+type FusionPeriodBatch = {
+  rangeStart: string;
+  rangeEnd: string;
+  stationNes: string[];
+  label: string;
+};
+
+/** Vercel 本番: 7日×4発電所の full-range API（station フォールバックは最終リトライ時のみ） */
+async function runFusionVercelPeriodStationBatches(params: {
+  rangeStart: string;
+  rangeEnd: string;
+  fullRangePostUrl: string;
+  stationPostUrl: string;
+  signal: AbortSignal;
+  resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
+  onSetInterrupted: (v: boolean) => void;
+  onChunkProgress?: (p: CollectChunkProgress) => void;
+}): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
+  const periodDays = getFusionDaysPerVercelPeriodChunk();
   const batchSize = getFusionStationsPerVercelBatch();
-  const batches: FusionBatch[] = [];
-  for (const sl of slices) {
+  const periodSlices = eachMaxDaySliceInRange(params.rangeStart, params.rangeEnd, periodDays);
+  if (periodSlices.length === 0) {
+    return {
+      step: { key: "fusion-solar", ok: false, message: "日付範囲が不正です。", recordCount: 0, errorCount: 0 },
+      flowAborted: false,
+    };
+  }
+
+  const batches: FusionPeriodBatch[] = [];
+  for (const ps of periodSlices) {
     for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i += batchSize) {
       const chunk = FUSION_SOLAR_STATIONS.slice(i, i + batchSize);
       batches.push({
-        startDate: sl.startDate,
-        endDate: sl.endDate,
+        rangeStart: ps.startDate,
+        rangeEnd: ps.endDate,
         stationNes: chunk.map((s) => s.ne),
-        label: `${dateSliceLabel(sl)}（${chunk.length}発電所）`,
+        label: `${ps.startDate}〜${ps.endDate}（${chunk.length}発電所）`,
       });
     }
   }
 
-  let totalRec = 0;
-  let totalErr = 0;
-  const failures: string[] = [];
-  const failedBatches: FusionBatch[] = [];
-  let reqIndex = 0;
-
-  const runOneBatch = async (b: FusionBatch): Promise<SliceCollectOutcome> => {
-    const out = await fetchCollectPostJsonWithRetries({
-      url: params.windowPostUrl,
-      body: { startDate: b.startDate, endDate: b.endDate, stationNeList: b.stationNes },
+  const runOnePeriodBatch = async (b: FusionPeriodBatch): Promise<SliceCollectOutcome> => {
+    const out = await runFusionFullRangeOnce({
+      rangeStart: b.rangeStart,
+      rangeEnd: b.rangeEnd,
+      fullRangePostUrl: params.fullRangePostUrl,
       signal: params.signal,
-      maxAttempts: 5,
+      resolveApiMessage: params.resolveApiMessage,
+      onSetInterrupted: params.onSetInterrupted,
+      stationNes: b.stationNes,
+      batchLabel: b.label,
+      skipProgress: true,
     });
-    const ok = Boolean(
-      out.res.ok &&
-        out.data &&
-        typeof out.data === "object" &&
-        (out.data as { ok?: boolean }).ok === true
-    );
-    const msg = params.resolveApiMessage(
-      out.data,
-      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
-      out.res.status
-    );
-    const rec =
-      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
-        ? (out.data as { recordCount: number }).recordCount
-        : 0;
-    const err =
-      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
-        ? (out.data as { errorCount: number }).errorCount
-        : 0;
-    return { ok, msg, rec, err, label: b.label };
+    return {
+      ok: out.step.ok,
+      msg: out.step.message,
+      rec: out.step.recordCount,
+      err: out.step.errorCount,
+      label: b.label,
+    };
   };
 
-  const runOneStation = async (paramsOne: {
-    startDate: string;
-    endDate: string;
-    stationNe: string;
-    label: string;
-  }): Promise<SliceCollectOutcome> => {
-    const out = await fetchCollectPostJsonWithRetries({
-      url: params.stationPostUrl,
-      body: { startDate: paramsOne.startDate, endDate: paramsOne.endDate, stationNe: paramsOne.stationNe },
-      signal: params.signal,
-      maxAttempts: 4,
-    });
-    const ok = Boolean(
-      out.res.ok &&
-        out.data &&
-        typeof out.data === "object" &&
-        (out.data as { ok?: boolean }).ok === true
-    );
-    const msg = params.resolveApiMessage(
-      out.data,
-      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
-      out.res.status
-    );
-    const rec =
-      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
-        ? (out.data as { recordCount: number }).recordCount
-        : 0;
-    const err =
-      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
-        ? (out.data as { errorCount: number }).errorCount
-        : 0;
-    return { ok, msg, rec, err, label: paramsOne.label };
-  };
-
-  const runBatchByStationFallback = async (b: FusionBatch): Promise<SliceCollectOutcome> => {
+  const runPeriodBatchByStationFallback = async (b: FusionPeriodBatch): Promise<SliceCollectOutcome> => {
     let totalRec = 0;
     let totalErr = 0;
     const stationFailures: string[] = [];
@@ -334,23 +333,40 @@ export async function runFusionSolarDayWindowChunks(params: {
       }
       if (i > 0) await new Promise((r) => setTimeout(r, 1200));
       const ne = b.stationNes[i]!;
-      const one = await runOneStation({
-        startDate: b.startDate,
-        endDate: b.endDate,
-        stationNe: ne,
-        label: `${b.label} / NE=${ne}`,
+      const out = await fetchCollectPostJsonWithRetries({
+        url: params.stationPostUrl,
+        body: { startDate: b.rangeStart, endDate: b.rangeEnd, stationNe: ne },
+        signal: params.signal,
+        maxAttempts: 3,
       });
-      totalRec += one.rec;
-      totalErr += one.err;
-      if (!one.ok) {
-        stationFailures.push(`NE=${ne}: ${one.msg}`);
-      }
+      const ok = Boolean(
+        out.res.ok &&
+          out.data &&
+          typeof out.data === "object" &&
+          (out.data as { ok?: boolean }).ok === true
+      );
+      const msg = params.resolveApiMessage(
+        out.data,
+        out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+        out.res.status
+      );
+      const rec =
+        out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+          ? (out.data as { recordCount: number }).recordCount
+          : 0;
+      const err =
+        out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+          ? (out.data as { errorCount: number }).errorCount
+          : 0;
+      totalRec += rec;
+      totalErr += err;
+      if (!ok) stationFailures.push(`NE=${ne}: ${msg}`);
     }
     return {
       ok: stationFailures.length === 0,
       msg:
         stationFailures.length === 0
-          ? `${b.label}: window失敗時のstationフォールバックで回復`
+          ? `${b.label}: stationフォールバックで回復`
           : `${b.label}: stationフォールバックも一部失敗\n${stationFailures.join("\n")}`,
       rec: totalRec,
       err: totalErr,
@@ -358,32 +374,11 @@ export async function runFusionSolarDayWindowChunks(params: {
     };
   };
 
-  const runOneBatchWithFallback = async (b: FusionBatch): Promise<SliceCollectOutcome> => {
-    try {
-      const win = await runOneBatch(b);
-      if (win.ok) return win;
-      const fallback = await runBatchByStationFallback(b);
-      if (fallback.ok) return fallback;
-      return {
-        ok: false,
-        msg: `${win.msg}\n${fallback.msg}`,
-        rec: fallback.rec,
-        err: fallback.err,
-        label: b.label,
-      };
-    } catch (e) {
-      if (isAbortError(e)) throw e;
-      const fallback = await runBatchByStationFallback(b);
-      if (fallback.ok) return fallback;
-      return {
-        ok: false,
-        msg: `${e instanceof Error ? e.message : String(e)}\n${fallback.msg}`,
-        rec: fallback.rec,
-        err: fallback.err,
-        label: b.label,
-      };
-    }
-  };
+  let totalRec = 0;
+  let totalErr = 0;
+  const failures: string[] = [];
+  const failedBatches: FusionPeriodBatch[] = [];
+  let reqIndex = 0;
 
   const abortedStep = (): { step: ChunkCollectStep; flowAborted: boolean } => {
     params.onSetInterrupted(true);
@@ -404,19 +399,12 @@ export async function runFusionSolarDayWindowChunks(params: {
 
   for (const b of batches) {
     if (params.signal.aborted) return abortedStep();
-
-    if (reqIndex > 0) {
-      await new Promise((r) => setTimeout(r, 2500));
-    }
+    if (reqIndex > 0) await new Promise((r) => setTimeout(r, 2000));
     reqIndex++;
-    params.onChunkProgress?.({
-      chunkIndex: reqIndex,
-      chunkTotal: batches.length,
-      label: b.label,
-    });
+    params.onChunkProgress?.({ chunkIndex: reqIndex, chunkTotal: batches.length, label: b.label });
 
     try {
-      const result = await runOneBatchWithFallback(b);
+      const result = await runOnePeriodBatch(b);
       totalRec += result.rec;
       totalErr += result.err;
       if (!result.ok) {
@@ -431,13 +419,16 @@ export async function runFusionSolarDayWindowChunks(params: {
   }
 
   if (failedBatches.length > 0 && !params.signal.aborted) {
-    await new Promise((r) => setTimeout(r, 8000));
+    await new Promise((r) => setTimeout(r, 6000));
     const recovered = new Set<string>();
     for (const b of failedBatches) {
       if (params.signal.aborted) break;
       await new Promise((r) => setTimeout(r, 2000));
       try {
-        const result = await runOneBatchWithFallback(b);
+        let result = await runOnePeriodBatch(b);
+        if (!result.ok) {
+          result = await runPeriodBatchByStationFallback(b);
+        }
         totalRec += result.rec;
         totalErr += result.err;
         if (result.ok) recovered.add(result.label);
@@ -464,8 +455,8 @@ export async function runFusionSolarDayWindowChunks(params: {
       ok: failures.length === 0,
       message:
         failures.length === 0
-          ? `FusionSolar: ${slices.length}日 × ${Math.ceil(FUSION_SOLAR_STATIONS.length / batchSize)}バッチ（計${batches.length}回）で取得しました。`
-          : `FusionSolar: 一部失敗（${failures.length}件）。欠損は FusionSolar ボタンで該当日を再取得してください。\n${failures.slice(0, 10).join("\n")}${
+          ? `FusionSolar: ${periodSlices.length}区間（最大${periodDays}日）× ${Math.ceil(FUSION_SOLAR_STATIONS.length / batchSize)}バッチ（計${batches.length}回）で取得しました。`
+          : `FusionSolar: 一部失敗（${failures.length}件）。欠損は FusionSolar ボタンで該当区間を再取得してください。\n${failures.slice(0, 10).join("\n")}${
               failures.length > 10 ? "\n…他省略" : ""
             }`,
       recordCount: totalRec,

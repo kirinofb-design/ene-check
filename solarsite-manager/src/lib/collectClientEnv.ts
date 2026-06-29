@@ -2,7 +2,7 @@ import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 /**
  * ブラウザ側の収集オーケストレーション用（クライアントのみ）。
- * Vercel 本番は関数 maxDuration=300s のため Fusion を日×発電所バッチに分割する。
+ * Vercel 本番は関数 maxDuration=300s のため Fusion を期間×4発電所バッチに分割する。
  */
 
 /** localhost / 127.0.0.1 で開発サーバーを開いているか */
@@ -41,6 +41,11 @@ export function getFusionStationsPerVercelBatch(): number {
 /** localhost: 1リクエストあたりの発電所数（セッション切れを防ぐ） */
 export function getLocalFusionStationBatchSize(): number {
   return isVercelHostedClient() ? FUSION_SOLAR_STATIONS.length : 4;
+}
+
+/** Vercel 本番: 1 full-range リクエストあたりの最大日数（300s 内に収める） */
+export function getFusionDaysPerVercelPeriodChunk(): number {
+  return 7;
 }
 
 /** 収集 API 1 回あたりの fetch 待ち上限（Vercel 関数 300s に合わせる） */
