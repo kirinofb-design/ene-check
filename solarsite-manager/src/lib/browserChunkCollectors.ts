@@ -3,6 +3,7 @@ import {
   getFusionStationsPerVercelBatch,
   getLocalFusionBatchDelayMs,
   getLocalFusionStationBatchSize,
+  getFusionWindowMaxAttempts,
   shouldPrewarmBetweenCollectorsClient,
 } from "@/lib/collectClientEnv";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
@@ -11,16 +12,22 @@ import { computeFusionExpectedMinRecords } from "@/lib/fusionSolarCollectBudget"
 
 function collectFetchSignal(userSignal: AbortSignal): AbortSignal {
   const timeoutMs = getCollectChunkFetchTimeoutMs();
-  if (!timeoutMs || typeof AbortSignal.timeout !== "function") return userSignal;
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!timeoutMs) return userSignal;
+
   const merged = new AbortController();
   const abortMerged = (reason?: unknown) => {
     if (!merged.signal.aborted) merged.abort(reason);
   };
+
   userSignal.addEventListener("abort", () => abortMerged(userSignal.reason), { once: true });
-  timeoutSignal.addEventListener("abort", () => abortMerged(timeoutSignal.reason), { once: true });
+
+  const timer = setTimeout(() => {
+    abortMerged(new DOMException(`Collect fetch timeout (${timeoutMs}ms)`, "TimeoutError"));
+  }, timeoutMs);
+
+  merged.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+
   if (userSignal.aborted) abortMerged(userSignal.reason);
-  if (timeoutSignal.aborted) abortMerged(timeoutSignal.reason);
   return merged.signal;
 }
 
@@ -503,7 +510,8 @@ async function runFusionWindowPerDay(params: {
 
   const runOneWindowCall = async (
     sl: DateSlice,
-    stationNes?: string[]
+    stationNes?: string[],
+    opts?: { maxAttempts?: number }
   ): Promise<SliceCollectOutcome> => {
     const body: Record<string, unknown> = { startDate: sl.startDate, endDate: sl.endDate };
     if (stationNes && stationNes.length > 0) {
@@ -516,7 +524,7 @@ async function runFusionWindowPerDay(params: {
       url: params.windowPostUrl,
       body,
       signal: params.signal,
-      maxAttempts: 5,
+      maxAttempts: opts?.maxAttempts ?? getFusionWindowMaxAttempts(),
     });
     const apiOk = Boolean(
       out.res.ok &&

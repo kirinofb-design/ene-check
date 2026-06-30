@@ -58,6 +58,11 @@ export function getCollectChunkFetchTimeoutMs(): number | undefined {
   return isVercelHostedClient() ? 295_000 : undefined;
 }
 
+/** Vercel 本番: Fusion window API の最大再試行（5回×295s だと1日で25分超えフリーズしやすい） */
+export function getFusionWindowMaxAttempts(): number {
+  return isVercelHostedClient() ? 2 : 5;
+}
+
 export function getLaplaceDaysPerChunk(): number {
   // ラプラスは月単位 CSV 取得のため、期間分割しても 1 回あたりの負荷はほぼ同じ。本番も月一括にする。
   return 31;

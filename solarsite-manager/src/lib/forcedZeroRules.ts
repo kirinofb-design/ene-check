@@ -9,8 +9,10 @@ export type ForcedZeroRule = {
 
 // 監視装置停止や計測不良など、期間中を強制0にしたいサイトをここで管理する
 export const FORCED_ZERO_RULES: ForcedZeroRule[] = [
-  // 落居: 2026-04-01〜06-23 は発電停止（ラプラス側に実データなし）。06-24 より再開。
-  { siteName: "落居（笠名高圧）", from: "2026-04-01", to: "2026-06-23", status: "laplace" },
+  // 落居: 2026-04-01〜06-23 はおおむね発電停止。05-01・05-06 は発電あり。06-24 より再開。
+  { siteName: "落居（笠名高圧）", from: "2026-04-01", to: "2026-04-30", status: "laplace" },
+  { siteName: "落居（笠名高圧）", from: "2026-05-02", to: "2026-05-05", status: "laplace" },
+  { siteName: "落居（笠名高圧）", from: "2026-05-07", to: "2026-06-23", status: "laplace" },
 ];
 
 export function parseYmdToUtcDate(ymd: string): Date | null {

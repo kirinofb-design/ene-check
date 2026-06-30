@@ -22,6 +22,7 @@ import {
 import {
   formatProdCollectTimeHint,
   fusionChunkStallWarning,
+  FUSION_CHUNK_STALL_ABORT_MS,
 } from "@/lib/collectProgressUi";
 import {
   runClientFullCollectOrchestration,
@@ -155,6 +156,23 @@ export default function DataCollectSection() {
     }
   }, [range.startDate, range.endDate]);
 
+  // FusionSolar が20分以上同じチャンクで止まったら fetch を自動中断（本番の長時間フリーズ対策）
+  useEffect(() => {
+    if (!allLocked || !allClientOrchestrationActiveRef.current) return;
+    const timer = setInterval(() => {
+      const p = clientAllProgressForUiRef.current;
+      if (p?.currentStepKey !== "fusion-solar") return;
+      const { key, changedAt } = fusionChunkProgressRef.current;
+      if (!key || changedAt <= 0) return;
+      if (Date.now() - changedAt < FUSION_CHUNK_STALL_ABORT_MS) return;
+      if (!allCollectAbortRef.current || allCollectAbortRef.current.signal.aborted) return;
+      allCollectAbortRef.current.abort(
+        new DOMException("FusionSolar の進捗停止を検知したため自動中断しました。", "AbortError")
+      );
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [allLocked]);
+
   const formatClientOrchestrationLockMessage = (p: ClientAllCollectProgress, parallel: string) => {
     const label =
       p.currentStepKey === "post-finalize"
@@ -248,6 +266,11 @@ export default function DataCollectSection() {
             allClientOrchestrationActiveRef.current = false;
             clientAllProgressForUiRef.current = null;
             allCollectAbortRef.current = null;
+            fusionChunkProgressRef.current = { key: "", changedAt: 0 };
+            setAllLocked(false);
+            setRunningKind(null);
+            setAllCancelRequested(false);
+            setLockMessage(null);
           }
           return;
         }

@@ -3,6 +3,8 @@ import { isVercelHostedClient } from "@/lib/collectClientEnv";
 
 /** 同一 Fusion チャンクがこの時間動かなければ「停止の可能性」を表示 */
 export const FUSION_CHUNK_STALL_WARN_MS = 15 * 60 * 1000;
+/** この時間進捗が変わらなければブラウザ側で fetch を自動中断（UIフリーズ防止） */
+export const FUSION_CHUNK_STALL_ABORT_MS = 22 * 60 * 1000;
 
 export function countFusionVercelBatches(rangeStart: string, rangeEnd: string): number {
   const daySlices = eachMaxDaySliceInRange(rangeStart, rangeEnd, 1);
@@ -43,5 +45,5 @@ export function fusionChunkStallWarning(
   const elapsed = nowMs - chunkChangedAtMs;
   if (elapsed < FUSION_CHUNK_STALL_WARN_MS) return null;
   const mins = Math.floor(elapsed / 60_000);
-  return `※ FusionSolar の進捗（${chunkKey}）が ${mins} 分間変わっていません。15分以上停止している場合は「実行取消」後、期間を分けて再実行してください。`;
+  return `※ FusionSolar の進捗（${chunkKey}）が ${mins} 分間変わっていません。20分以上停止している場合は「実行取消」を押してください。自動中断も試みます。`;
 }

@@ -199,20 +199,135 @@ function countFusionRowsInRequestRange(
   return count;
 }
 
+function listYmdsInUtcRange(rangeStart: Date, rangeEnd: Date): string[] {
+  const out: string[] = [];
+  const cur = new Date(rangeStart);
+  while (cur.getTime() <= rangeEnd.getTime()) {
+    out.push(
+      `${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, "0")}-${String(cur.getUTCDate()).padStart(2, "0")}`
+    );
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
+function listMissingFusionYmdsInRange(
+  rows: Array<{ dateStr: string; pcsKwhText: string }>,
+  rangeStart: Date,
+  rangeEnd: Date
+): string[] {
+  const collected = new Set<string>();
+  for (const row of dedupeFusionRowsPreferringNonEmptyPcs(rows)) {
+    const ymd =
+      normalizeFusionTableDateCell(row.dateStr) ??
+      (() => {
+        const t = row.dateStr.replace(/\//g, "-").trim();
+        return isYmd(t) ? t : null;
+      })();
+    if (ymd && isFusionPcsCellText(row.pcsKwhText)) collected.add(ymd);
+  }
+  return listYmdsInUtcRange(rangeStart, rangeEnd).filter((ymd) => !collected.has(ymd));
+}
+
+async function scrapeFusionReportTablePage(
+  page: Page,
+  dateIdx: number,
+  pcsIdx: number
+): Promise<Array<{ dateStr: string; pcsKwhText: string }>> {
+  return page.$$eval(
+    "table tbody tr",
+    (trs, cols: { dateIdx: number; pcsIdx: number }) => {
+      function normDate(raw: string): string | null {
+        const ascii = raw
+          .trim()
+          .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+          .replace(/\u3000/g, " ");
+        const slash = ascii.replace(/-/g, "/").replace(/\s/g, "");
+        const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(slash);
+        if (!m) return null;
+        const y = Number(m[1]);
+        const mo = Number(m[2]);
+        const d = Number(m[3]);
+        if (!y || !mo || !d) return null;
+        return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      }
+      function isPcsLike(s: string): boolean {
+        const t = (s ?? "").trim().replace(/,/g, "").replace(/\s/g, "");
+        if (!t) return false;
+        if (/^[―\-－ー]+$/.test(t)) return false;
+        return /^-?\d+(\.\d+)?$/.test(t);
+      }
+      const { dateIdx: diHint, pcsIdx: piHint } = cols;
+      return trs.map((tr) => {
+        const texts = Array.from(tr.querySelectorAll("td")).map((td) => (td.textContent ?? "").trim());
+        let di = -1;
+        for (let i = 0; i < texts.length; i++) {
+          if (normDate(texts[i])) {
+            di = i;
+            break;
+          }
+        }
+        if (di < 0 && diHint < texts.length && normDate(texts[diHint])) di = diHint;
+        if (di < 0) return { dateStr: "", pcsKwhText: "" };
+        const dateStr = texts[di];
+        let pcsKwhText = (texts[piHint] ?? "").trim();
+        if (!isPcsLike(pcsKwhText)) {
+          pcsKwhText = "";
+          for (let j = di + 1; j < texts.length; j++) {
+            if (isPcsLike(texts[j])) {
+              pcsKwhText = texts[j];
+              break;
+            }
+          }
+        }
+        return { dateStr, pcsKwhText };
+      });
+    },
+    { dateIdx, pcsIdx }
+  );
+}
+
 /** 月別レポート表のページネーション（複数 pagination がある画面では表直下を優先） */
 function fusionReportPaginationLocator(page: Page) {
-  const scoped = page.locator(".ant-table-wrapper .ant-pagination").last();
-  return scoped;
+  return page.locator(".ant-table-wrapper .ant-pagination, .ant-spin-container .ant-pagination, .ant-pagination").last();
+}
+
+async function readFusionReportPaginationState(
+  page: Page
+): Promise<{ totalItems: number | null; currentPage: number | null }> {
+  return page.evaluate(() => {
+    let totalItems: number | null = null;
+    for (const el of document.querySelectorAll(".ant-pagination-total-text, .ant-pagination-total")) {
+      const m = /(\d+)\s*(?:条|件)/.exec((el.textContent ?? "").replace(/\s/g, ""));
+      if (m) {
+        totalItems = Number(m[1]);
+        break;
+      }
+    }
+    let currentPage: number | null = null;
+    const active = document.querySelector(".ant-pagination-item-active");
+    if (active) {
+      const p = Number((active.textContent ?? "").trim());
+      if (Number.isFinite(p) && p > 0) currentPage = p;
+    }
+    return { totalItems, currentPage };
+  });
+}
+
+async function waitForFusionReportPaginationReady(page: Page): Promise<void> {
+  await page.locator(".ant-pagination").last().waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+  await page.waitForTimeout(1200);
 }
 
 /** 1ページ表示件数を最大に広げ、31日分を1ページに収める（湖西など14件/頁で2頁目が取れない対策） */
 async function tryExpandFusionReportPageSize(page: Page): Promise<boolean> {
   try {
     const changers = page.locator(
-      ".ant-table-wrapper .ant-pagination-options-size-changer, .ant-table-wrapper .ant-pagination-options .ant-select"
+      ".ant-pagination-options-size-changer, .ant-pagination-options .ant-select, .ant-pagination-options .ant-select-selector"
     );
     if ((await changers.count()) === 0) return false;
 
+    await changers.last().scrollIntoViewIfNeeded().catch(() => {});
     await changers.last().click({ timeout: 6_000 });
     await page.waitForTimeout(400);
 
@@ -242,6 +357,7 @@ async function tryExpandFusionReportPageSize(page: Page): Promise<boolean> {
     await page.waitForTimeout(700);
     await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
     await page.waitForSelector("table tbody tr", { timeout: 15_000 }).catch(() => {});
+    await waitForFusionReportPaginationReady(page);
     return true;
   } catch {
     await page.keyboard.press("Escape").catch(() => {});
@@ -249,37 +365,198 @@ async function tryExpandFusionReportPageSize(page: Page): Promise<boolean> {
   }
 }
 
+async function clickFusionReportPageNumber(page: Page, pageNum: number): Promise<boolean> {
+  const pagination = fusionReportPaginationLocator(page);
+  const candidates = [
+    pagination.locator(`li.ant-pagination-item[title="${pageNum}"]`),
+    pagination.locator("li.ant-pagination-item").filter({ hasText: new RegExp(`^\\s*${pageNum}\\s*$`) }),
+    page.locator(`li.ant-pagination-item[title="${pageNum}"]`).last(),
+  ];
+  for (const item of candidates) {
+    if ((await item.count()) === 0) continue;
+    const cls = (await item.first().getAttribute("class")) ?? "";
+    if (cls.includes("ant-pagination-item-active") || cls.includes("ant-pagination-disabled")) continue;
+    const prevSignature = await page
+      .locator("table tbody tr")
+      .first()
+      .innerText()
+      .catch(() => "");
+    await item.first().scrollIntoViewIfNeeded().catch(() => {});
+    await item.first().click({ timeout: 8_000 });
+    await page.waitForTimeout(700);
+    await page
+      .waitForFunction(
+        (prev) => {
+          const tr = document.querySelector("table tbody tr");
+          return Boolean(tr && (tr.textContent ?? "").trim() !== (prev ?? "").trim());
+        },
+        prevSignature,
+        { timeout: 10_000 }
+      )
+      .catch(() => {});
+    await page.waitForSelector("table tbody tr", { timeout: 12_000 }).catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 async function clickFusionReportNextPage(page: Page): Promise<boolean> {
   const pagination = fusionReportPaginationLocator(page);
-  let nextBtn = pagination.locator("li.ant-pagination-next").last();
-  if ((await nextBtn.count()) === 0) {
-    nextBtn = page.locator("li.ant-pagination-next").last();
+  const nextCandidates = [
+    pagination.locator("li.ant-pagination-next:not(.ant-pagination-disabled)"),
+    pagination.locator("li.ant-pagination-next"),
+    page.locator("li.ant-pagination-next:not(.ant-pagination-disabled)").last(),
+    page.locator("li.ant-pagination-next").last(),
+  ];
+  for (const nextBtn of nextCandidates) {
+    if ((await nextBtn.count()) === 0) continue;
+    const className = (await nextBtn.first().getAttribute("class")) ?? "";
+    const ariaDisabled = await nextBtn.first().getAttribute("aria-disabled");
+    if (className.includes("ant-pagination-disabled") || ariaDisabled === "true") continue;
+
+    const prevSignature = await page
+      .locator("table tbody tr")
+      .first()
+      .innerText()
+      .catch(() => "");
+    await nextBtn.first().scrollIntoViewIfNeeded().catch(() => {});
+    await nextBtn.first().click({ timeout: 8_000 });
+    await page.waitForTimeout(700);
+    await page
+      .waitForFunction(
+        (prev) => {
+          const tr = document.querySelector("table tbody tr");
+          return Boolean(tr && (tr.textContent ?? "").trim() !== (prev ?? "").trim());
+        },
+        prevSignature,
+        { timeout: 10_000 }
+      )
+      .catch(() => {});
+    await page.waitForSelector("table tbody tr", { timeout: 12_000 }).catch(() => {});
+    return true;
   }
-  if ((await nextBtn.count()) === 0) return false;
+  return false;
+}
 
-  const className = (await nextBtn.getAttribute("class")) ?? "";
-  const ariaDisabled = await nextBtn.getAttribute("aria-disabled");
-  if (className.includes("ant-pagination-disabled") || ariaDisabled === "true") return false;
+async function advanceFusionReportPagination(page: Page): Promise<boolean> {
+  await fusionReportPaginationLocator(page).scrollIntoViewIfNeeded().catch(() => {});
+  const state = await readFusionReportPaginationState(page);
+  if (state.currentPage != null) {
+    if (await clickFusionReportPageNumber(page, state.currentPage + 1)) return true;
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await page.waitForTimeout(1500 * attempt);
+    if (await clickFusionReportNextPage(page)) return true;
+  }
+  return false;
+}
 
-  const prevSignature = await page
-    .locator("table tbody tr")
-    .first()
-    .innerText()
-    .catch(() => "");
-  await nextBtn.click({ timeout: 8_000 });
-  await page.waitForTimeout(700);
-  await page
-    .waitForFunction(
-      (prev) => {
-        const tr = document.querySelector("table tbody tr");
-        return Boolean(tr && (tr.textContent ?? "").trim() !== (prev ?? "").trim());
-      },
-      prevSignature,
-      { timeout: 10_000 }
-    )
-    .catch(() => {});
-  await page.waitForSelector("table tbody tr", { timeout: 12_000 }).catch(() => {});
-  return true;
+async function switchFusionReportGranularity(page: Page, mode: "monthly" | "daily"): Promise<void> {
+  const label = mode === "monthly" ? "月別" : "日別";
+  const granularityEl = page.locator("span.ant-select-selection-item").first();
+  const currentTitle = (await granularityEl.getAttribute("title")) ?? "";
+  if (currentTitle.includes(label)) return;
+
+  await granularityEl.click();
+  await page.waitForTimeout(500);
+  const byTitle = page.locator(`.ant-select-item-option[title="${label}"]`).first();
+  const byText = page.locator(".ant-select-item-option", { hasText: label }).first();
+  if (await byTitle.count()) {
+    await byTitle.click({ timeout: 8_000 });
+  } else if (await byText.count()) {
+    await byText.click({ timeout: 8_000 });
+  } else {
+    throw new Error(`FusionSolar: ${label}オプションが見つかりません。`);
+  }
+  await page.waitForTimeout(600);
+}
+
+async function setFusionReportPeriod(
+  page: Page,
+  mode: "monthly" | "daily",
+  yearMonth: string,
+  dayYmd?: string
+): Promise<void> {
+  if (mode === "monthly") {
+    const pickerInput = page.locator(".ant-picker-input input").first();
+    await pickerInput.click();
+    await pickerInput.selectText();
+    await pickerInput.fill(yearMonth);
+    return;
+  }
+  const slash = (dayYmd ?? yearMonth).replace(/-/g, "/");
+  const inputs = page.locator(".ant-picker-input input");
+  const count = await inputs.count();
+  if (count >= 2) {
+    for (let i = 0; i < 2; i++) {
+      await inputs.nth(i).click();
+      await inputs.nth(i).selectText();
+      await inputs.nth(i).fill(slash);
+      await page.waitForTimeout(200);
+    }
+  } else {
+    await inputs.first().click();
+    await inputs.first().selectText();
+    await inputs.first().fill(slash);
+  }
+}
+
+/** 月別ページネーションで取れなかった日を日別粒度で1日ずつ取得 */
+async function collectFusionDailyRowsForMissingDates(params: {
+  page: Page;
+  missingYmds: string[];
+  yearMonth: string;
+  dateIdx: number;
+  pcsIdx: number;
+  rangeStart: Date;
+  rangeEnd: Date;
+  userId: string;
+  stationName: string;
+}): Promise<Array<{ dateStr: string; pcsKwhText: string }>> {
+  if (params.missingYmds.length === 0) return [];
+
+  logger.info("fusionSolarCollector: daily granularity fallback for missing dates", {
+    userId: params.userId,
+    extra: {
+      station: params.stationName,
+      yearMonth: params.yearMonth,
+      missingCount: params.missingYmds.length,
+    },
+  });
+
+  await switchFusionReportGranularity(params.page, "daily");
+  const extraRows: Array<{ dateStr: string; pcsKwhText: string }> = [];
+
+  for (let i = 0; i < params.missingYmds.length; i++) {
+    throwIfAllCollectCancelled(params.userId);
+    const ymd = params.missingYmds[i]!;
+    if (i > 0) await params.page.waitForTimeout(450);
+
+    await setFusionReportPeriod(params.page, "daily", params.yearMonth, ymd);
+    await retriggerFusionReportSearch(params.page, params.userId, params.stationName, ymd);
+
+    const pageRows = await scrapeFusionReportTablePage(params.page, params.dateIdx, params.pcsIdx);
+    for (const r of pageRows) {
+      const norm =
+        normalizeFusionTableDateCell(r.dateStr) ??
+        (() => {
+          const t = r.dateStr.replace(/\//g, "-").trim();
+          return isYmd(t) ? t : null;
+        })();
+      if (norm !== ymd || !isFusionPcsCellText(r.pcsKwhText)) continue;
+      const dt = parseYmdToUtcDate(norm);
+      if (!dt || dt.getTime() < params.rangeStart.getTime() || dt.getTime() > params.rangeEnd.getTime()) continue;
+      extraRows.push(r);
+      break;
+    }
+  }
+
+  try {
+    await switchFusionReportGranularity(params.page, "monthly");
+  } catch {
+    // 次の月処理へ進めるため握りつぶす
+  }
+  return extraRows;
 }
 
 async function retriggerFusionReportSearch(page: Page, userId: string, stationName: string, yearMonth: string) {
@@ -1006,6 +1283,7 @@ export async function runFusionSolarCollector(
             }
             await page.waitForSelector("table tbody tr", { timeout: 20_000 }).catch(() => {});
             await page.waitForTimeout(800);
+            await waitForFusionReportPaginationReady(page);
 
             const { dateIdx, pcsIdx } = await detectFusionReportColumnIndices(page);
             logger.info("fusionSolarCollector: report table columns", {
@@ -1015,63 +1293,14 @@ export async function runFusionSolarCollector(
 
             await tryExpandFusionReportPageSize(page);
 
-            // ページネーション対応: 日付範囲外になったら早期打ち切りして高速化する
+            const expectedDaysThisMonth = countExpectedDaysInMonthRange(yearMonth, start, end);
+            const seenYmds = new Set<string>();
             const rows: { dateStr: string; pcsKwhText: string }[] = [];
             let pageCount = 0;
             while (true) {
               throwIfAllCollectCancelled(userId);
               pageCount += 1;
-              const pageRows = await page.$$eval(
-                "table tbody tr",
-                (trs, cols: { dateIdx: number; pcsIdx: number }) => {
-                  function normDate(raw: string): string | null {
-                    const ascii = raw
-                      .trim()
-                      .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-                      .replace(/\u3000/g, " ");
-                    const slash = ascii.replace(/-/g, "/").replace(/\s/g, "");
-                    const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(slash);
-                    if (!m) return null;
-                    const y = Number(m[1]);
-                    const mo = Number(m[2]);
-                    const d = Number(m[3]);
-                    if (!y || !mo || !d) return null;
-                    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-                  }
-                  function isPcsLike(s: string): boolean {
-                    const t = (s ?? "").trim().replace(/,/g, "").replace(/\s/g, "");
-                    if (!t) return false;
-                    if (/^[―\-－ー]+$/.test(t)) return false;
-                    return /^-?\d+(\.\d+)?$/.test(t);
-                  }
-                  const { dateIdx: diHint, pcsIdx: piHint } = cols;
-                  return trs.map((tr) => {
-                    const texts = Array.from(tr.querySelectorAll("td")).map((td) => (td.textContent ?? "").trim());
-                    let di = -1;
-                    for (let i = 0; i < texts.length; i++) {
-                      if (normDate(texts[i])) {
-                        di = i;
-                        break;
-                      }
-                    }
-                    if (di < 0 && diHint < texts.length && normDate(texts[diHint])) di = diHint;
-                    if (di < 0) return { dateStr: "", pcsKwhText: "" };
-                    const dateStr = texts[di];
-                    let pcsKwhText = (texts[piHint] ?? "").trim();
-                    if (!isPcsLike(pcsKwhText)) {
-                      pcsKwhText = "";
-                      for (let j = di + 1; j < texts.length; j++) {
-                        if (isPcsLike(texts[j])) {
-                          pcsKwhText = texts[j];
-                          break;
-                        }
-                      }
-                    }
-                    return { dateStr, pcsKwhText };
-                  });
-                },
-                { dateIdx, pcsIdx }
-              );
+              const pageRows = await scrapeFusionReportTablePage(page, dateIdx, pcsIdx);
               for (const r of pageRows) {
                 const ymd =
                   normalizeFusionTableDateCell(r.dateStr) ??
@@ -1082,22 +1311,25 @@ export async function runFusionSolarCollector(
                 const dt = ymd ? parseYmdToUtcDate(ymd) : null;
                 if (!dt) continue;
                 if (dt.getTime() > end.getTime()) continue;
-                if (dt.getTime() < start.getTime()) {
-                  // 画面が日付降順とは限らず、同一ページで抜け・逆順があると return すると未取得日が出る
-                  continue;
-                }
+                if (dt.getTime() < start.getTime()) continue;
+                if (ymd) seenYmds.add(ymd);
                 rows.push(r);
               }
+
+              if (expectedDaysThisMonth > 0 && seenYmds.size >= expectedDaysThisMonth) break;
+
+              const pagState = await readFusionReportPaginationState(page);
+              if (pagState.totalItems != null && seenYmds.size >= pagState.totalItems) break;
 
               if (pageCount >= MAX_TABLE_PAGES_PER_STATION_MONTH) {
                 logger.warn("fusionSolarCollector: max pagination pages reached, stop paging", {
                   userId,
-                  extra: { station: station.name, yearMonth, pageCount },
+                  extra: { station: station.name, yearMonth, pageCount, seenDays: seenYmds.size },
                 });
                 break;
               }
 
-              const hasNext = await clickFusionReportNextPage(page);
+              const hasNext = await advanceFusionReportPagination(page);
               if (!hasNext) break;
             }
             return rows;
@@ -1229,6 +1461,38 @@ export async function runFusionSolarCollector(
               },
             });
           }
+
+          if (collectedDaysInMonth < expectedDaysInMonth) {
+            try {
+              const missingYmds = listMissingFusionYmdsInRange(allRows, start, end);
+              const { dateIdx, pcsIdx } = await detectFusionReportColumnIndices(page);
+              const dailyRows = await collectFusionDailyRowsForMissingDates({
+                page,
+                missingYmds,
+                yearMonth,
+                dateIdx,
+                pcsIdx,
+                rangeStart: start,
+                rangeEnd: end,
+                userId,
+                stationName: station.name,
+              });
+              if (dailyRows.length > 0) {
+                allRows = dedupeFusionRowsPreferringNonEmptyPcs([...allRows, ...dailyRows]);
+                collectedDaysInMonth = countFusionRowsInRequestRange(allRows, start, end);
+              }
+            } catch (dailyErr) {
+              logger.warn("fusionSolarCollector: daily granularity fallback failed", {
+                userId,
+                extra: {
+                  station: station.name,
+                  yearMonth,
+                  error: dailyErr instanceof Error ? dailyErr.message : String(dailyErr),
+                },
+              });
+            }
+          }
+
           if (collectedDaysInMonth < expectedDaysInMonth) {
             logger.warn("fusionSolarCollector: month still incomplete after retry", {
               userId,
