@@ -158,6 +158,158 @@ function getMonthsInRange(startDate: Date, endDate: Date): string[] {
   return months;
 }
 
+/** yearMonth のうち、リクエスト期間 [rangeStart, rangeEnd] に含まれる日数 */
+function countExpectedDaysInMonthRange(yearMonth: string, rangeStart: Date, rangeEnd: Date): number {
+  const [y, mo] = yearMonth.split("-").map(Number);
+  if (!y || !mo) return 0;
+  const monthStart = new Date(Date.UTC(y, mo - 1, 1));
+  const monthEnd = new Date(Date.UTC(y, mo, 0));
+  const from = new Date(Math.max(monthStart.getTime(), rangeStart.getTime()));
+  const to = new Date(Math.min(monthEnd.getTime(), rangeEnd.getTime()));
+  if (from.getTime() > to.getTime()) return 0;
+  let count = 0;
+  const cur = new Date(from);
+  while (cur.getTime() <= to.getTime()) {
+    count++;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return count;
+}
+
+function countFusionRowsInRequestRange(
+  rows: Array<{ dateStr: string; pcsKwhText: string }>,
+  rangeStart: Date,
+  rangeEnd: Date
+): number {
+  const deduped = dedupeFusionRowsPreferringNonEmptyPcs(rows);
+  let count = 0;
+  for (const row of deduped) {
+    const ymd =
+      normalizeFusionTableDateCell(row.dateStr) ??
+      (() => {
+        const t = row.dateStr.replace(/\//g, "-").trim();
+        return isYmd(t) ? t : null;
+      })();
+    const dt = ymd ? parseYmdToUtcDate(ymd) : null;
+    if (!dt) continue;
+    if (dt.getTime() < rangeStart.getTime() || dt.getTime() > rangeEnd.getTime()) continue;
+    if (!isFusionPcsCellText(row.pcsKwhText)) continue;
+    count++;
+  }
+  return count;
+}
+
+/** 月別レポート表のページネーション（複数 pagination がある画面では表直下を優先） */
+function fusionReportPaginationLocator(page: Page) {
+  const scoped = page.locator(".ant-table-wrapper .ant-pagination").last();
+  return scoped;
+}
+
+/** 1ページ表示件数を最大に広げ、31日分を1ページに収める（湖西など14件/頁で2頁目が取れない対策） */
+async function tryExpandFusionReportPageSize(page: Page): Promise<boolean> {
+  try {
+    const changers = page.locator(
+      ".ant-table-wrapper .ant-pagination-options-size-changer, .ant-table-wrapper .ant-pagination-options .ant-select"
+    );
+    if ((await changers.count()) === 0) return false;
+
+    await changers.last().click({ timeout: 6_000 });
+    await page.waitForTimeout(400);
+
+    const dropdownOptions = page.locator(
+      ".ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option"
+    );
+    await dropdownOptions.first().waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+
+    const optionCount = await dropdownOptions.count();
+    if (optionCount === 0) {
+      await page.keyboard.press("Escape").catch(() => {});
+      return false;
+    }
+
+    let bestIdx = optionCount - 1;
+    let bestSize = 0;
+    for (let i = 0; i < optionCount; i++) {
+      const text = ((await dropdownOptions.nth(i).textContent()) ?? "").replace(/\s/g, "");
+      const m = /(\d{2,3})/.exec(text);
+      const size = m ? Number(m[1]) : 0;
+      if (size >= bestSize) {
+        bestSize = size;
+        bestIdx = i;
+      }
+    }
+    await dropdownOptions.nth(bestIdx).click({ timeout: 5_000 });
+    await page.waitForTimeout(700);
+    await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+    await page.waitForSelector("table tbody tr", { timeout: 15_000 }).catch(() => {});
+    return true;
+  } catch {
+    await page.keyboard.press("Escape").catch(() => {});
+    return false;
+  }
+}
+
+async function clickFusionReportNextPage(page: Page): Promise<boolean> {
+  const pagination = fusionReportPaginationLocator(page);
+  let nextBtn = pagination.locator("li.ant-pagination-next").last();
+  if ((await nextBtn.count()) === 0) {
+    nextBtn = page.locator("li.ant-pagination-next").last();
+  }
+  if ((await nextBtn.count()) === 0) return false;
+
+  const className = (await nextBtn.getAttribute("class")) ?? "";
+  const ariaDisabled = await nextBtn.getAttribute("aria-disabled");
+  if (className.includes("ant-pagination-disabled") || ariaDisabled === "true") return false;
+
+  const prevSignature = await page
+    .locator("table tbody tr")
+    .first()
+    .innerText()
+    .catch(() => "");
+  await nextBtn.click({ timeout: 8_000 });
+  await page.waitForTimeout(700);
+  await page
+    .waitForFunction(
+      (prev) => {
+        const tr = document.querySelector("table tbody tr");
+        return Boolean(tr && (tr.textContent ?? "").trim() !== (prev ?? "").trim());
+      },
+      prevSignature,
+      { timeout: 10_000 }
+    )
+    .catch(() => {});
+  await page.waitForSelector("table tbody tr", { timeout: 12_000 }).catch(() => {});
+  return true;
+}
+
+async function retriggerFusionReportSearch(page: Page, userId: string, stationName: string, yearMonth: string) {
+  const searchBtnCandidates = [
+    page.getByRole("button", { name: /検索|Search/i }).first(),
+    page.locator('button:has-text("検索")').first(),
+    page.locator('button:has-text("Search")').first(),
+    page.locator(".ant-btn-primary").first(),
+  ];
+  for (const btn of searchBtnCandidates) {
+    try {
+      if ((await btn.count()) > 0) {
+        await btn.click({ timeout: 8_000 });
+        await page.waitForSelector("table tbody tr", { timeout: 20_000 }).catch(() => {});
+        await page.waitForTimeout(800);
+        return;
+      }
+    } catch {
+      // try next
+    }
+  }
+  await page.keyboard.press("Enter").catch(() => {});
+  logger.warn("fusionSolarCollector: 再検索ボタンが見つからないため Enter で代替実行", {
+    userId,
+    extra: { station: stationName, yearMonth },
+  });
+  await page.waitForSelector("table tbody tr", { timeout: 20_000 }).catch(() => {});
+  await page.waitForTimeout(800);
+}
+
 async function loginFusionSolar(page: Page, loginId: string, password: string, userId: string) {
   // autoLogin の FusionSolar 手順に寄せる（SPA で要素出現が遅い）
   const idSelCandidates = [
@@ -861,6 +1013,8 @@ export async function runFusionSolarCollector(
               extra: { station: station.name, yearMonth, dateIdx, pcsIdx },
             });
 
+            await tryExpandFusionReportPageSize(page);
+
             // ページネーション対応: 日付範囲外になったら早期打ち切りして高速化する
             const rows: { dateStr: string; pcsKwhText: string }[] = [];
             let pageCount = 0;
@@ -943,11 +1097,8 @@ export async function runFusionSolarCollector(
                 break;
               }
 
-              const nextBtn = page.locator("li.ant-pagination-next");
-              const isDisabled = await nextBtn.getAttribute("aria-disabled");
-              if (isDisabled === "true") break;
-              await nextBtn.click();
-              await page.waitForTimeout(600);
+              const hasNext = await clickFusionReportNextPage(page);
+              if (!hasNext) break;
             }
             return rows;
         };
@@ -1044,6 +1195,53 @@ export async function runFusionSolarCollector(
         consecutiveLoginLoopCount = 0;
 
         allRows = dedupeFusionRowsPreferringNonEmptyPcs(allRows);
+
+        const expectedDaysInMonth = countExpectedDaysInMonthRange(yearMonth, start, end);
+        let collectedDaysInMonth = countFusionRowsInRequestRange(allRows, start, end);
+        if (expectedDaysInMonth > 0 && collectedDaysInMonth < expectedDaysInMonth) {
+          logger.warn("fusionSolarCollector: incomplete month rows detected, retry with expanded page size", {
+            userId,
+            extra: {
+              station: station.name,
+              yearMonth,
+              expectedDaysInMonth,
+              collectedDaysInMonth,
+            },
+          });
+          try {
+            const expanded = await tryExpandFusionReportPageSize(page);
+            if (expanded) {
+              await retriggerFusionReportSearch(page, userId, station.name, yearMonth);
+            }
+            const retryRows = dedupeFusionRowsPreferringNonEmptyPcs(await collectRowsWithTimeout());
+            const retryDays = countFusionRowsInRequestRange(retryRows, start, end);
+            if (retryDays > collectedDaysInMonth) {
+              allRows = retryRows;
+              collectedDaysInMonth = retryDays;
+            }
+          } catch (retryErr) {
+            logger.warn("fusionSolarCollector: incomplete month retry failed", {
+              userId,
+              extra: {
+                station: station.name,
+                yearMonth,
+                error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+              },
+            });
+          }
+          if (collectedDaysInMonth < expectedDaysInMonth) {
+            logger.warn("fusionSolarCollector: month still incomplete after retry", {
+              userId,
+              extra: {
+                station: station.name,
+                yearMonth,
+                expectedDaysInMonth,
+                collectedDaysInMonth,
+              },
+            });
+            errorCount += expectedDaysInMonth - collectedDaysInMonth;
+          }
+        }
 
         const mappedName = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
         const site = await withPrismaRetry(
