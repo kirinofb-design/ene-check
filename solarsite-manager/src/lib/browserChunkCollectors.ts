@@ -256,6 +256,7 @@ export async function runFusionSolarDayWindowChunks(params: {
       slices,
       signal: params.signal,
       windowPostUrl: params.windowPostUrl,
+      stationPostUrl: params.stationPostUrl,
       resolveApiMessage: params.resolveApiMessage,
       onSetInterrupted: params.onSetInterrupted,
       onChunkProgress: params.onChunkProgress,
@@ -496,6 +497,7 @@ async function runFusionWindowPerDay(params: {
   slices: DateSlice[];
   signal: AbortSignal;
   windowPostUrl: string;
+  stationPostUrl: string;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
   onChunkProgress?: (p: CollectChunkProgress) => void;
@@ -555,11 +557,78 @@ async function runFusionWindowPerDay(params: {
     return { ok, msg: detailMsg, rec, err, label };
   };
 
+  const runPerStationFallback = async (sl: DateSlice): Promise<SliceCollectOutcome> => {
+    let fallbackRec = 0;
+    let fallbackErr = 0;
+    const fallbackFailures: string[] = [];
+    for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i++) {
+      if (params.signal.aborted) break;
+      if (i > 0) await new Promise((r) => setTimeout(r, 900));
+      const station = FUSION_SOLAR_STATIONS[i]!;
+      let part = await runOneWindowCall(sl, [station.ne], { maxAttempts: 2 });
+      if (!part.ok) {
+        const stationOut = await fetchCollectPostJsonWithRetries({
+          url: params.stationPostUrl,
+          body: { startDate: sl.startDate, endDate: sl.endDate, stationNe: station.ne },
+          signal: params.signal,
+          maxAttempts: 2,
+        });
+        const apiOk = Boolean(
+          stationOut.res.ok &&
+            stationOut.data &&
+            typeof stationOut.data === "object" &&
+            (stationOut.data as { ok?: boolean }).ok === true
+        );
+        const msg = params.resolveApiMessage(
+          stationOut.data,
+          stationOut.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${stationOut.res.status}）`,
+          stationOut.res.status
+        );
+        const rec =
+          stationOut.data &&
+          typeof stationOut.data === "object" &&
+          typeof (stationOut.data as { recordCount?: unknown }).recordCount === "number"
+            ? (stationOut.data as { recordCount: number }).recordCount
+            : 0;
+        const err =
+          stationOut.data &&
+          typeof stationOut.data === "object" &&
+          typeof (stationOut.data as { errorCount?: unknown }).errorCount === "number"
+            ? (stationOut.data as { errorCount: number }).errorCount
+            : 0;
+        const minRecOne = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, 1);
+        part = {
+          ok: apiOk && rec >= minRecOne,
+          msg,
+          rec,
+          err,
+          label: `${station.name}（${dateSliceLabel(sl)}）`,
+        };
+      }
+      fallbackRec += part.rec;
+      fallbackErr += part.err;
+      if (!part.ok) fallbackFailures.push(`${part.label}: ${part.msg}`);
+    }
+    const minRecAll = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, FUSION_SOLAR_STATIONS.length);
+    const ok = fallbackFailures.length === 0 && fallbackRec >= minRecAll;
+    return {
+      ok,
+      msg: ok
+        ? `${dateSliceLabel(sl)}: 発電所単位で回復`
+        : fallbackFailures.join("\n"),
+      rec: fallbackRec,
+      err: fallbackErr,
+      label: dateSliceLabel(sl),
+    };
+  };
+
   const runOneSlice = async (sl: DateSlice): Promise<SliceCollectOutcome> => {
     const allStations = await runOneWindowCall(sl);
     if (allStations.ok) return allStations;
 
-    if (FUSION_SOLAR_STATIONS.length <= batchSize) return allStations;
+    if (FUSION_SOLAR_STATIONS.length <= batchSize) {
+      return await runPerStationFallback(sl);
+    }
 
     let splitRec = 0;
     let splitErr = 0;
@@ -576,17 +645,16 @@ async function runFusionWindowPerDay(params: {
     }
     const minRecAll = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, FUSION_SOLAR_STATIONS.length);
     const ok = splitFailures.length === 0 && splitRec >= minRecAll;
-    return {
-      ok,
-      msg: ok
-        ? `${dateSliceLabel(sl)}: 4+4分割で回復`
-        : splitFailures.length > 0
-          ? splitFailures.join("\n")
-          : `保存 ${splitRec}件（目安 ${minRecAll}件以上）`,
-      rec: splitRec,
-      err: splitErr,
-      label: dateSliceLabel(sl),
-    };
+    if (ok) {
+      return {
+        ok: true,
+        msg: `${dateSliceLabel(sl)}: 4+4分割で回復`,
+        rec: splitRec,
+        err: splitErr,
+        label: dateSliceLabel(sl),
+      };
+    }
+    return await runPerStationFallback(sl);
   };
 
   const abortedStep = (): { step: ChunkCollectStep; flowAborted: boolean } => {
