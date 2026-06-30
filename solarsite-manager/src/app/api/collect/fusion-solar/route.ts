@@ -4,8 +4,8 @@ import { handleApiError } from "@/lib/apiError";
 import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
-import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
-import { isKnownFusionStationNe } from "@/lib/fusionSolarStations";
+import { getFusionSolarWallBudgetMs, computeFusionExpectedMinRecords } from "@/lib/fusionSolarCollectBudget";
+import { isKnownFusionStationNe, FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 export const maxDuration = 300;
 
@@ -77,9 +77,13 @@ export async function POST(request: Request) {
     let result;
     try {
       const wallBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
+      const stationCount =
+        stationNeList && stationNeList.length > 0 ? stationNeList.length : FUSION_SOLAR_STATIONS.length;
+      const expectedMinRecords = computeFusionExpectedMinRecords(startDate, endDate, stationCount);
       result = await runFusionSolarCollector(userId, startDate, endDate, {
         wallBudgetMs,
         stationNeAllowList: stationNeList && stationNeList.length > 0 ? stationNeList : undefined,
+        expectedMinRecords,
       });
     } finally {
       releaseCollectorLock(userId, "fusion-solar");

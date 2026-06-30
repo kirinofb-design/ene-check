@@ -1,22 +1,12 @@
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
-import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
-import {
-  getFusionDaysPerVercelPeriodChunk,
-  getFusionStationsPerVercelBatch,
-  isVercelHostedClient,
-} from "@/lib/collectClientEnv";
+import { isVercelHostedClient } from "@/lib/collectClientEnv";
 
 /** 同一 Fusion チャンクがこの時間動かなければ「停止の可能性」を表示 */
 export const FUSION_CHUNK_STALL_WARN_MS = 15 * 60 * 1000;
 
 export function countFusionVercelBatches(rangeStart: string, rangeEnd: string): number {
-  const periodSlices = eachMaxDaySliceInRange(
-    rangeStart,
-    rangeEnd,
-    getFusionDaysPerVercelPeriodChunk()
-  );
-  const stationBatches = Math.ceil(FUSION_SOLAR_STATIONS.length / getFusionStationsPerVercelBatch());
-  return periodSlices.length * stationBatches;
+  const daySlices = eachMaxDaySliceInRange(rangeStart, rangeEnd, 1);
+  return daySlices.length;
 }
 
 /** 本番一括取得のおおよその所要時間（分） */
@@ -25,10 +15,10 @@ export function estimateProdFullCollectMinutes(
   rangeEnd: string
 ): { min: number; max: number } {
   const fusionBatches = countFusionVercelBatches(rangeStart, rangeEnd);
-  const nonFusionMin = 18;
-  const nonFusionMax = 35;
-  const perFusionBatchMin = 2.5;
-  const perFusionBatchMax = 5;
+  const nonFusionMin = 12;
+  const nonFusionMax = 25;
+  const perFusionBatchMin = 2;
+  const perFusionBatchMax = 4;
   return {
     min: Math.round(nonFusionMin + fusionBatches * perFusionBatchMin),
     max: Math.round(nonFusionMax + fusionBatches * perFusionBatchMax),
@@ -39,7 +29,7 @@ export function formatProdCollectTimeHint(rangeStart: string, rangeEnd: string):
   if (!isVercelHostedClient()) return null;
   const { min, max } = estimateProdFullCollectMinutes(rangeStart, rangeEnd);
   const fusionBatches = countFusionVercelBatches(rangeStart, rangeEnd);
-  return `本番サイトでは全体でおおよそ ${min}〜${max} 分かかります（FusionSolar は ${fusionBatches} リクエスト）。タブを閉じずにお待ちください。`;
+  return `本番サイトでは全体でおおよそ ${min}〜${max} 分かかります（FusionSolar は ${fusionBatches} 日分＝${fusionBatches} リクエスト）。タブを閉じずにお待ちください。`;
 }
 
 export function fusionChunkStallWarning(

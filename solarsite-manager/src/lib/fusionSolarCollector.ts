@@ -478,6 +478,8 @@ export async function runFusionSolarCollector(
   options?: {
     stationNeAllowList?: string[];
     wallBudgetMs?: number;
+    /** 省略時は件数チェックなし。API ルートから days×stations に基づき渡す */
+    expectedMinRecords?: number;
   }
 ): Promise<{ ok: boolean; message: string; recordCount: number; errorCount: number }> {
   const start = parseYmdToUtcDate(startDate);
@@ -1119,12 +1121,22 @@ export async function runFusionSolarCollector(
       }
     }
 
-    const ok = recordCount > 0 || errorCount === 0;
+    const ok = (() => {
+      const expectedMin = options?.expectedMinRecords;
+      const coverageOk = expectedMin == null || recordCount >= expectedMin;
+      const hasData = recordCount > 0 || errorCount === 0;
+      if (!coverageOk) {
+        return false;
+      }
+      return hasData;
+    })();
     return {
       ok,
       message: ok
         ? `FusionSolarのデータ取得が完了しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`
-        : `FusionSolarのデータ取得で有効データを保存できませんでした（保存: ${recordCount}件 / スキップ: ${errorCount}件）。期間を短くして再実行してください。`,
+        : options?.expectedMinRecords != null && recordCount < options.expectedMinRecords
+          ? `FusionSolarのデータ取得が不完全です（保存: ${recordCount}件 / 目安: ${options.expectedMinRecords}件以上）。期間を短く分けて再実行してください。`
+          : `FusionSolarのデータ取得で有効データを保存できませんでした（保存: ${recordCount}件 / スキップ: ${errorCount}件）。期間を短くして再実行してください。`,
       recordCount,
       errorCount,
     };

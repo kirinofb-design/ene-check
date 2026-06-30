@@ -2,7 +2,7 @@ import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 /**
  * ブラウザ側の収集オーケストレーション用（クライアントのみ）。
- * Vercel 本番は関数 maxDuration=300s のため Fusion を期間×4発電所バッチに分割する。
+ * Vercel 本番は関数 maxDuration=300s のため Fusion を日次 window API に分割する。
  */
 
 /** localhost / 127.0.0.1 で開発サーバーを開いているか */
@@ -21,7 +21,7 @@ export function isVercelHostedClient(): boolean {
   return process.env.NEXT_PUBLIC_VERCEL === "1";
 }
 
-/** FusionSolar を日×発電所バッチに分割するか（Vercel 本番向け） */
+/** FusionSolar を日次 window に分割するか（Vercel 本番向け） */
 export function shouldSplitFusionByStationClient(): boolean {
   return isVercelHostedClient();
 }
@@ -38,14 +38,19 @@ export function getFusionStationsPerVercelBatch(): number {
   return isVercelHostedClient() ? 4 : FUSION_SOLAR_STATIONS.length;
 }
 
-/** localhost: 1リクエストあたりの発電所数（セッション切れを防ぐ） */
+/** localhost: 1リクエストあたりの発電所数（8一括を試し、失敗時のみ4+4に分割） */
 export function getLocalFusionStationBatchSize(): number {
-  return isVercelHostedClient() ? FUSION_SOLAR_STATIONS.length : 4;
+  return isVercelHostedClient() ? FUSION_SOLAR_STATIONS.length : FUSION_SOLAR_STATIONS.length;
 }
 
-/** Vercel 本番: 1 full-range リクエストあたりの最大日数（300s 内に収める） */
-export function getFusionDaysPerVercelPeriodChunk(): number {
-  return 7;
+/** localhost: Fusion バッチ間の待機（ms） */
+export function getLocalFusionBatchDelayMs(): number {
+  return isVercelHostedClient() ? 2000 : 0;
+}
+
+/** localhost ではコレクター間 prewarm を省略（Chromium 起動待ちを削減） */
+export function shouldPrewarmBetweenCollectorsClient(): boolean {
+  return isVercelHostedClient();
 }
 
 /** 収集 API 1 回あたりの fetch 待ち上限（Vercel 関数 300s に合わせる） */
@@ -54,7 +59,8 @@ export function getCollectChunkFetchTimeoutMs(): number | undefined {
 }
 
 export function getLaplaceDaysPerChunk(): number {
-  return isVercelHostedClient() ? 3 : 14;
+  // ラプラスは月単位 CSV 取得のため、期間分割しても 1 回あたりの負荷はほぼ同じ。本番も月一括にする。
+  return 31;
 }
 
 export function getSmaDaysPerChunk(): number {
@@ -62,11 +68,11 @@ export function getSmaDaysPerChunk(): number {
 }
 
 export function getLaplaceChunkDelayMs(): number {
-  return isVercelHostedClient() ? 8000 : 1000;
+  return isVercelHostedClient() ? 3000 : 0;
 }
 
 export function getSmaChunkDelayMs(): number {
-  return isVercelHostedClient() ? 4500 : 800;
+  return isVercelHostedClient() ? 4500 : 0;
 }
 
 export function getOrchestrationChillMs(): {
@@ -86,10 +92,10 @@ export function getOrchestrationChillMs(): {
     };
   }
   return {
-    afterEco: 400,
-    afterSma: 400,
-    afterLaplace: 400,
-    beforeFusion: 400,
-    betweenMonitors: 400,
+    afterEco: 0,
+    afterSma: 0,
+    afterLaplace: 0,
+    beforeFusion: 0,
+    betweenMonitors: 0,
   };
 }

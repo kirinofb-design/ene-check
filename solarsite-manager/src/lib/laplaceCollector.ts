@@ -1247,6 +1247,7 @@ export async function runLaplaceCollector(
     };
 
     const months = getMonthsInRange(start, end);
+    let monthFailures = 0;
     for (const yearMonth of months) {
       throwIfAllCollectCancelled(userId);
       const runMonth = async () => {
@@ -1286,6 +1287,7 @@ export async function runLaplaceCollector(
             userId,
             extra: { yearMonth, error: retryErr instanceof Error ? retryErr.message : String(retryErr) },
           });
+          monthFailures++;
           errorCount++;
         }
       }
@@ -1295,8 +1297,11 @@ export async function runLaplaceCollector(
     await withPrismaRetry(() => applyForcedZeroOverrides(prisma, start, end, "laplace"));
 
     return {
-      ok: true,
-      message: `ラプラスデータ取得が完了しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`,
+      ok: monthFailures === 0,
+      message:
+        monthFailures === 0
+          ? `ラプラスデータ取得が完了しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`
+          : `ラプラスデータ取得が一部失敗しました（保存: ${recordCount}件 / 失敗月: ${monthFailures}件）。再実行してください。`,
       recordCount,
       errorCount,
     };

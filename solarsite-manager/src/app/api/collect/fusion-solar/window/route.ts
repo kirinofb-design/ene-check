@@ -4,9 +4,9 @@ import { handleApiError } from "@/lib/apiError";
 import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
-import { diffDaysInclusiveYmd, getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
+import { diffDaysInclusiveYmd, getFusionSolarWallBudgetMs, computeFusionExpectedMinRecords } from "@/lib/fusionSolarCollectBudget";
 import { logger } from "@/lib/logger";
-import { isKnownFusionStationNe } from "@/lib/fusionSolarStations";
+import { isKnownFusionStationNe, FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 /**
  * 指定期間が短いときだけ全発電所をまとめて取得（ログインは1回）。
@@ -100,10 +100,14 @@ export async function POST(request: Request) {
     }
 
     const wallBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
+    const stationCount =
+      stationNeList && stationNeList.length > 0 ? stationNeList.length : FUSION_SOLAR_STATIONS.length;
+    const expectedMinRecords = computeFusionExpectedMinRecords(startDate, endDate, stationCount);
     try {
       const result = await runFusionSolarCollector(userId, startDate, endDate, {
         wallBudgetMs,
         stationNeAllowList: stationNeList && stationNeList.length > 0 ? stationNeList : undefined,
+        expectedMinRecords,
       });
       return NextResponse.json({
         ok: result.ok,

@@ -12,6 +12,7 @@ import {
   getOrchestrationChillMs,
   getSmaChunkDelayMs,
   getSmaDaysPerChunk,
+  shouldPrewarmBetweenCollectorsClient,
   shouldSplitFusionByStationClient,
 } from "@/lib/collectClientEnv";
 
@@ -36,6 +37,7 @@ function sleepClientOrchestration(ms: number, signal: AbortSignal): Promise<void
 }
 
 async function prewarmCollectChromium(signal: AbortSignal): Promise<void> {
+  if (!shouldPrewarmBetweenCollectorsClient()) return;
   await fetch(COLLECT_PREWARM_URL, { method: "POST", signal }).catch(() => {});
 }
 

@@ -15,6 +15,17 @@ export function diffDaysInclusiveYmd(startDate: string, endDate: string): number
   return Math.floor((e - s) / (24 * 60 * 60 * 1000)) + 1;
 }
 
+/** 期間×発電所の保存件数がこれ未満なら不完全（部分成功）とみなす */
+export function computeFusionExpectedMinRecords(
+  startDate: string,
+  endDate: string,
+  stationCount: number
+): number {
+  const days = diffDaysInclusiveYmd(startDate, endDate);
+  if (days <= 0 || stationCount <= 0) return 1;
+  return Math.max(1, Math.floor(days * stationCount * 0.6));
+}
+
 export function getFusionSolarWallBudgetMs(startDate: string, endDate: string): number {
   // localhost / 自前ホストは 300s 制限が無いので、全発電所を1リクエストで取りきれる大きな予算にする
   if (!isVercelRuntimeEnv()) return capCollectWallBudgetMs(COLLECT_WALL_BUDGET_MAX_LOCAL_MS);

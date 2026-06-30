@@ -1,11 +1,13 @@
 import {
   getCollectChunkFetchTimeoutMs,
-  getFusionDaysPerVercelPeriodChunk,
   getFusionStationsPerVercelBatch,
+  getLocalFusionBatchDelayMs,
   getLocalFusionStationBatchSize,
+  shouldPrewarmBetweenCollectorsClient,
 } from "@/lib/collectClientEnv";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
+import { computeFusionExpectedMinRecords } from "@/lib/fusionSolarCollectBudget";
 
 function collectFetchSignal(userSignal: AbortSignal): AbortSignal {
   const timeoutMs = getCollectChunkFetchTimeoutMs();
@@ -241,14 +243,12 @@ export async function runFusionSolarDayWindowChunks(params: {
     });
   }
 
-  // Vercel 本番: 期間（7日）×4発電所の full-range API（日次 window より大幅に少ないリクエスト数）
+  // Vercel 本番: 1日×全発電所の window API（300s 内に確実に収まり、部分成功を検知できる）
   if (params.splitByStation) {
-    return await runFusionVercelPeriodStationBatches({
-      rangeStart: params.rangeStart,
-      rangeEnd: params.rangeEnd,
-      fullRangePostUrl: params.fullRangePostUrl ?? "/api/collect/fusion-solar",
-      stationPostUrl: params.stationPostUrl,
+    return await runFusionWindowPerDay({
+      slices,
       signal: params.signal,
+      windowPostUrl: params.windowPostUrl,
       resolveApiMessage: params.resolveApiMessage,
       onSetInterrupted: params.onSetInterrupted,
       onChunkProgress: params.onChunkProgress,
@@ -257,211 +257,6 @@ export async function runFusionSolarDayWindowChunks(params: {
 
   return {
     step: { key: "fusion-solar", ok: false, message: "内部エラー: Fusion 分割モードが未設定です。", recordCount: 0, errorCount: 0 },
-    flowAborted: false,
-  };
-}
-
-type FusionPeriodBatch = {
-  rangeStart: string;
-  rangeEnd: string;
-  stationNes: string[];
-  label: string;
-};
-
-/** Vercel 本番: 7日×4発電所の full-range API（station フォールバックは最終リトライ時のみ） */
-async function runFusionVercelPeriodStationBatches(params: {
-  rangeStart: string;
-  rangeEnd: string;
-  fullRangePostUrl: string;
-  stationPostUrl: string;
-  signal: AbortSignal;
-  resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
-  onSetInterrupted: (v: boolean) => void;
-  onChunkProgress?: (p: CollectChunkProgress) => void;
-}): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
-  const periodDays = getFusionDaysPerVercelPeriodChunk();
-  const batchSize = getFusionStationsPerVercelBatch();
-  const periodSlices = eachMaxDaySliceInRange(params.rangeStart, params.rangeEnd, periodDays);
-  if (periodSlices.length === 0) {
-    return {
-      step: { key: "fusion-solar", ok: false, message: "日付範囲が不正です。", recordCount: 0, errorCount: 0 },
-      flowAborted: false,
-    };
-  }
-
-  const batches: FusionPeriodBatch[] = [];
-  for (const ps of periodSlices) {
-    for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i += batchSize) {
-      const chunk = FUSION_SOLAR_STATIONS.slice(i, i + batchSize);
-      batches.push({
-        rangeStart: ps.startDate,
-        rangeEnd: ps.endDate,
-        stationNes: chunk.map((s) => s.ne),
-        label: `${ps.startDate}〜${ps.endDate}（${chunk.length}発電所）`,
-      });
-    }
-  }
-
-  const runOnePeriodBatch = async (b: FusionPeriodBatch): Promise<SliceCollectOutcome> => {
-    const out = await runFusionFullRangeOnce({
-      rangeStart: b.rangeStart,
-      rangeEnd: b.rangeEnd,
-      fullRangePostUrl: params.fullRangePostUrl,
-      signal: params.signal,
-      resolveApiMessage: params.resolveApiMessage,
-      onSetInterrupted: params.onSetInterrupted,
-      stationNes: b.stationNes,
-      batchLabel: b.label,
-      skipProgress: true,
-    });
-    return {
-      ok: out.step.ok,
-      msg: out.step.message,
-      rec: out.step.recordCount,
-      err: out.step.errorCount,
-      label: b.label,
-    };
-  };
-
-  const runPeriodBatchByStationFallback = async (b: FusionPeriodBatch): Promise<SliceCollectOutcome> => {
-    let totalRec = 0;
-    let totalErr = 0;
-    const stationFailures: string[] = [];
-    for (let i = 0; i < b.stationNes.length; i++) {
-      if (params.signal.aborted) {
-        return { ok: false, msg: "中断されました。", rec: totalRec, err: totalErr, label: b.label };
-      }
-      if (i > 0) await new Promise((r) => setTimeout(r, 1200));
-      const ne = b.stationNes[i]!;
-      const out = await fetchCollectPostJsonWithRetries({
-        url: params.stationPostUrl,
-        body: { startDate: b.rangeStart, endDate: b.rangeEnd, stationNe: ne },
-        signal: params.signal,
-        maxAttempts: 3,
-      });
-      const ok = Boolean(
-        out.res.ok &&
-          out.data &&
-          typeof out.data === "object" &&
-          (out.data as { ok?: boolean }).ok === true
-      );
-      const msg = params.resolveApiMessage(
-        out.data,
-        out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
-        out.res.status
-      );
-      const rec =
-        out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
-          ? (out.data as { recordCount: number }).recordCount
-          : 0;
-      const err =
-        out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
-          ? (out.data as { errorCount: number }).errorCount
-          : 0;
-      totalRec += rec;
-      totalErr += err;
-      if (!ok) stationFailures.push(`NE=${ne}: ${msg}`);
-    }
-    return {
-      ok: stationFailures.length === 0,
-      msg:
-        stationFailures.length === 0
-          ? `${b.label}: stationフォールバックで回復`
-          : `${b.label}: stationフォールバックも一部失敗\n${stationFailures.join("\n")}`,
-      rec: totalRec,
-      err: totalErr,
-      label: b.label,
-    };
-  };
-
-  let totalRec = 0;
-  let totalErr = 0;
-  const failures: string[] = [];
-  const failedBatches: FusionPeriodBatch[] = [];
-  let reqIndex = 0;
-
-  const abortedStep = (): { step: ChunkCollectStep; flowAborted: boolean } => {
-    params.onSetInterrupted(true);
-    return {
-      step: {
-        key: "fusion-solar",
-        ok: failures.length === 0,
-        message:
-          failures.length > 0
-            ? `中断。一部失敗:\n${failures.join("\n")}`
-            : "FusionSolar 取得が中断されました。",
-        recordCount: totalRec,
-        errorCount: totalErr,
-      },
-      flowAborted: true,
-    };
-  };
-
-  for (const b of batches) {
-    if (params.signal.aborted) return abortedStep();
-    if (reqIndex > 0) await new Promise((r) => setTimeout(r, 2000));
-    reqIndex++;
-    params.onChunkProgress?.({ chunkIndex: reqIndex, chunkTotal: batches.length, label: b.label });
-
-    try {
-      const result = await runOnePeriodBatch(b);
-      totalRec += result.rec;
-      totalErr += result.err;
-      if (!result.ok) {
-        failures.push(`${b.label}: ${result.msg}`);
-        failedBatches.push(b);
-      }
-    } catch (e) {
-      if (isAbortError(e)) return abortedStep();
-      failures.push(`${b.label}: ${e instanceof Error ? e.message : String(e)}`);
-      failedBatches.push(b);
-    }
-  }
-
-  if (failedBatches.length > 0 && !params.signal.aborted) {
-    await new Promise((r) => setTimeout(r, 6000));
-    const recovered = new Set<string>();
-    for (const b of failedBatches) {
-      if (params.signal.aborted) break;
-      await new Promise((r) => setTimeout(r, 2000));
-      try {
-        let result = await runOnePeriodBatch(b);
-        if (!result.ok) {
-          result = await runPeriodBatchByStationFallback(b);
-        }
-        totalRec += result.rec;
-        totalErr += result.err;
-        if (result.ok) recovered.add(result.label);
-      } catch {
-        // 初回 failures を維持
-      }
-    }
-    if (recovered.size > 0) {
-      for (let i = failures.length - 1; i >= 0; i--) {
-        const line = failures[i] ?? "";
-        for (const label of recovered) {
-          if (line.startsWith(`${label}:`)) {
-            failures.splice(i, 1);
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  return {
-    step: {
-      key: "fusion-solar",
-      ok: failures.length === 0,
-      message:
-        failures.length === 0
-          ? `FusionSolar: ${periodSlices.length}区間（最大${periodDays}日）× ${Math.ceil(FUSION_SOLAR_STATIONS.length / batchSize)}バッチ（計${batches.length}回）で取得しました。`
-          : `FusionSolar: 一部失敗（${failures.length}件）。欠損は FusionSolar ボタンで該当区間を再取得してください。\n${failures.slice(0, 10).join("\n")}${
-              failures.length > 10 ? "\n…他省略" : ""
-            }`,
-      recordCount: totalRec,
-      errorCount: totalErr,
-    },
     flowAborted: false,
   };
 }
@@ -475,8 +270,10 @@ async function runFusionFullRangeStationBatches(params: {
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
   onChunkProgress?: (p: CollectChunkProgress) => void;
+  /** 省略時は getLocalFusionStationBatchSize()。8一括失敗時の 4+4 分割用 */
+  stationBatchSize?: number;
 }): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
-  const batchSize = getLocalFusionStationBatchSize();
+  const batchSize = params.stationBatchSize ?? getLocalFusionStationBatchSize();
   const batches: { stationNes: string[]; label: string }[] = [];
   for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i += batchSize) {
     const chunk = FUSION_SOLAR_STATIONS.slice(i, i + batchSize);
@@ -487,13 +284,24 @@ async function runFusionFullRangeStationBatches(params: {
   }
 
   if (batches.length === 1) {
-    return runFusionFullRangeOnce({ ...params, stationNes: batches[0]!.stationNes, batchLabel: batches[0]!.label });
+    const result = await runFusionFullRangeOnce({
+      ...params,
+      stationNes: batches[0]!.stationNes,
+      batchLabel: batches[0]!.label,
+    });
+    if (result.step.ok || result.flowAborted) return result;
+    // 8発電所一括が login loop 等で失敗した場合のみ 4+4 に退避（成功時は1リクエストで ~10分短縮）
+    if (batchSize >= FUSION_SOLAR_STATIONS.length && FUSION_SOLAR_STATIONS.length > 4) {
+      return runFusionFullRangeStationBatches({ ...params, stationBatchSize: 4 });
+    }
+    return result;
   }
 
   let totalRec = 0;
   let totalErr = 0;
   const failures: string[] = [];
   let batchIdx = 0;
+  const batchDelayMs = getLocalFusionBatchDelayMs();
 
   for (const batch of batches) {
     if (params.signal.aborted) {
@@ -513,8 +321,8 @@ async function runFusionFullRangeStationBatches(params: {
       };
     }
 
-    if (batchIdx > 0) {
-      await new Promise((r) => setTimeout(r, 1500));
+    if (batchIdx > 0 && batchDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, batchDelayMs));
     }
     batchIdx++;
     params.onChunkProgress?.({
@@ -676,7 +484,7 @@ async function runFusionFullRangeOnce(params: {
   }
 }
 
-/** 1日＝1リクエスト（window API 専用。Vercel バッチ以外では使わない） */
+/** 1日＝1リクエスト（window API 専用。Vercel 本番向け） */
 async function runFusionWindowPerDay(params: {
   slices: DateSlice[];
   signal: AbortSignal;
@@ -691,15 +499,26 @@ async function runFusionWindowPerDay(params: {
   const failures: string[] = [];
   const failedSlices: DateSlice[] = [];
   let reqIndex = 0;
+  const batchSize = getFusionStationsPerVercelBatch();
 
-  const runOneSlice = async (sl: DateSlice): Promise<SliceCollectOutcome> => {
+  const runOneWindowCall = async (
+    sl: DateSlice,
+    stationNes?: string[]
+  ): Promise<SliceCollectOutcome> => {
+    const body: Record<string, unknown> = { startDate: sl.startDate, endDate: sl.endDate };
+    if (stationNes && stationNes.length > 0) {
+      body.stationNeList = stationNes;
+    }
+    const stationCount = stationNes?.length ?? FUSION_SOLAR_STATIONS.length;
+    const minRec = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, stationCount);
+
     const out = await fetchCollectPostJsonWithRetries({
       url: params.windowPostUrl,
-      body: { startDate: sl.startDate, endDate: sl.endDate },
+      body,
       signal: params.signal,
       maxAttempts: 5,
     });
-    const ok = Boolean(
+    const apiOk = Boolean(
       out.res.ok &&
         out.data &&
         typeof out.data === "object" &&
@@ -718,7 +537,48 @@ async function runFusionWindowPerDay(params: {
       out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
         ? (out.data as { errorCount: number }).errorCount
         : 0;
-    return { ok, msg, rec, err, label: dateSliceLabel(sl) };
+    const coverageOk = rec >= minRec;
+    const ok = apiOk && coverageOk;
+    const detailMsg = !apiOk ? msg : !coverageOk ? `保存 ${rec}件（目安 ${minRec}件以上）` : msg;
+    const label =
+      stationNes && stationNes.length > 0 && stationNes.length < FUSION_SOLAR_STATIONS.length
+        ? `${dateSliceLabel(sl)}（${stationNes.length}発電所）`
+        : dateSliceLabel(sl);
+    return { ok, msg: detailMsg, rec, err, label };
+  };
+
+  const runOneSlice = async (sl: DateSlice): Promise<SliceCollectOutcome> => {
+    const allStations = await runOneWindowCall(sl);
+    if (allStations.ok) return allStations;
+
+    if (FUSION_SOLAR_STATIONS.length <= batchSize) return allStations;
+
+    let splitRec = 0;
+    let splitErr = 0;
+    const splitFailures: string[] = [];
+    for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i += batchSize) {
+      if (params.signal.aborted) break;
+      if (i > 0) await new Promise((r) => setTimeout(r, 1200));
+      const chunk = FUSION_SOLAR_STATIONS.slice(i, i + batchSize);
+      const stationNes = chunk.map((s) => s.ne);
+      const part = await runOneWindowCall(sl, stationNes);
+      splitRec += part.rec;
+      splitErr += part.err;
+      if (!part.ok) splitFailures.push(part.label + ": " + part.msg);
+    }
+    const minRecAll = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, FUSION_SOLAR_STATIONS.length);
+    const ok = splitFailures.length === 0 && splitRec >= minRecAll;
+    return {
+      ok,
+      msg: ok
+        ? `${dateSliceLabel(sl)}: 4+4分割で回復`
+        : splitFailures.length > 0
+          ? splitFailures.join("\n")
+          : `保存 ${splitRec}件（目安 ${minRecAll}件以上）`,
+      rec: splitRec,
+      err: splitErr,
+      label: dateSliceLabel(sl),
+    };
   };
 
   const abortedStep = (): { step: ChunkCollectStep; flowAborted: boolean } => {
@@ -930,7 +790,9 @@ export async function runLaplaceDayChunks(params: {
     };
   }
 
-  await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
+  if (shouldPrewarmBetweenCollectorsClient()) {
+    await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
+  }
 
   let totalRec = 0;
   let totalErr = 0;
@@ -985,7 +847,9 @@ export async function runLaplaceDayChunks(params: {
       };
     }
 
-    await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
+    if (shouldPrewarmBetweenCollectorsClient()) {
+      await fetch(params.prewarmPostUrl, { method: "POST", signal: params.signal }).catch(() => {});
+    }
     if (chunkIdx > 0) {
       // Vercel 連続起動で Chromium が閉じたり /tmp が枯渇しやすいため長めに空ける
       await new Promise((r) => setTimeout(r, params.betweenChunksMs ?? 8000));
