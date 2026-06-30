@@ -1,14 +1,28 @@
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
-import { isVercelHostedClient } from "@/lib/collectClientEnv";
+import {
+  getFusionFullRangeBatchSize,
+  isVercelHostedClient,
+  shouldUseFusionDayWindowClient,
+} from "@/lib/collectClientEnv";
+import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 /** 同一 Fusion チャンクがこの時間動かなければ「停止の可能性」を表示 */
 export const FUSION_CHUNK_STALL_WARN_MS = 15 * 60 * 1000;
 /** この時間進捗が変わらなければブラウザ側で fetch を自動中断（UIフリーズ防止） */
 export const FUSION_CHUNK_STALL_ABORT_MS = 22 * 60 * 1000;
 
+/** 本番 Fusion のブラウザ側リクエスト数（期間一括=4+4の2本、日次window=日数） */
+export function countFusionClientBatches(rangeStart: string, rangeEnd: string): number {
+  if (shouldUseFusionDayWindowClient()) {
+    return eachMaxDaySliceInRange(rangeStart, rangeEnd, 1).length;
+  }
+  const batchSize = getFusionFullRangeBatchSize();
+  return Math.ceil(FUSION_SOLAR_STATIONS.length / batchSize);
+}
+
+/** @deprecated countFusionClientBatches を使用 */
 export function countFusionVercelBatches(rangeStart: string, rangeEnd: string): number {
-  const daySlices = eachMaxDaySliceInRange(rangeStart, rangeEnd, 1);
-  return daySlices.length;
+  return countFusionClientBatches(rangeStart, rangeEnd);
 }
 
 /** 本番一括取得のおおよその所要時間（分） */
@@ -16,11 +30,11 @@ export function estimateProdFullCollectMinutes(
   rangeStart: string,
   rangeEnd: string
 ): { min: number; max: number } {
-  const fusionBatches = countFusionVercelBatches(rangeStart, rangeEnd);
+  const fusionBatches = countFusionClientBatches(rangeStart, rangeEnd);
   const nonFusionMin = 12;
   const nonFusionMax = 25;
-  const perFusionBatchMin = 2;
-  const perFusionBatchMax = 4;
+  const perFusionBatchMin = shouldUseFusionDayWindowClient() ? 2 : 8;
+  const perFusionBatchMax = shouldUseFusionDayWindowClient() ? 4 : 18;
   return {
     min: Math.round(nonFusionMin + fusionBatches * perFusionBatchMin),
     max: Math.round(nonFusionMax + fusionBatches * perFusionBatchMax),
@@ -30,20 +44,29 @@ export function estimateProdFullCollectMinutes(
 export function formatProdCollectTimeHint(rangeStart: string, rangeEnd: string): string | null {
   if (!isVercelHostedClient()) return null;
   const { min, max } = estimateProdFullCollectMinutes(rangeStart, rangeEnd);
-  const fusionBatches = countFusionVercelBatches(rangeStart, rangeEnd);
+  const fusionBatches = countFusionClientBatches(rangeStart, rangeEnd);
   const fusionOnly = formatFusionOnlyTimeHint(rangeStart, rangeEnd);
-  const allHint = `全データ一括（本番）: おおよそ ${min}〜${max} 分（FusionSolar は ${fusionBatches} 日分）。`;
+  const fusionUnit = shouldUseFusionDayWindowClient()
+    ? `${fusionBatches} 日分`
+    : `${fusionBatches} リクエスト（4+4 期間一括）`;
+  const allHint = `全データ一括（本番）: おおよそ ${min}〜${max} 分（FusionSolar は ${fusionUnit}）。`;
   return fusionOnly ? `${allHint}\n${fusionOnly}` : allHint;
 }
 
-/** FusionSolar 個別取得の所要時間目安（本番・日次 window + リトライ込み） */
+/** FusionSolar 個別取得の所要時間目安（本番） */
 export function formatFusionOnlyTimeHint(rangeStart: string, rangeEnd: string): string | null {
   if (!isVercelHostedClient()) return null;
-  const days = countFusionVercelBatches(rangeStart, rangeEnd);
-  if (days <= 0) return null;
-  const min = Math.max(5, Math.round(days * 2.5));
-  const max = Math.max(min + 10, Math.round(days * 7));
-  return `FusionSolar 個別取得（本番）: ${days} 日分でおおよそ ${min}〜${max} 分。進捗は日ごとに更新されます。タブを閉じないでください。`;
+  if (shouldUseFusionDayWindowClient()) {
+    const days = countFusionClientBatches(rangeStart, rangeEnd);
+    if (days <= 0) return null;
+    const min = Math.max(5, Math.round(days * 2.5));
+    const max = Math.max(min + 10, Math.round(days * 7));
+    return `FusionSolar 個別取得（本番）: ${days} 日分でおおよそ ${min}〜${max} 分。進捗は日ごとに更新されます。タブを閉じないでください。`;
+  }
+  const batches = countFusionClientBatches(rangeStart, rangeEnd);
+  const min = Math.max(10, batches * 8);
+  const max = Math.max(min + 10, batches * 18);
+  return `FusionSolar 個別取得（本番）: 開発と同様の期間一括（${batches} リクエスト）でおおよそ ${min}〜${max} 分。タブを閉じないでください。`;
 }
 
 export function fusionChunkStallWarning(

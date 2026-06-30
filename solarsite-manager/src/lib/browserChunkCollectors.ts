@@ -2,7 +2,7 @@ import {
   getCollectChunkFetchTimeoutMs,
   getFusionStationsPerVercelBatch,
   getLocalFusionBatchDelayMs,
-  getLocalFusionStationBatchSize,
+  getFusionFullRangeBatchSize,
   getFusionWindowMaxAttempts,
   shouldPrewarmBetweenCollectorsClient,
 } from "@/lib/collectClientEnv";
@@ -250,7 +250,7 @@ export async function runFusionSolarDayWindowChunks(params: {
     });
   }
 
-  // Vercel 本番: 1日×全発電所の window API（300s 内に確実に収まり、部分成功を検知できる）
+  // 既定: 期間一括（開発と同じ 4+4）。NEXT_PUBLIC_FUSION_DAY_WINDOW=1 のときのみ日次 window
   if (params.splitByStation) {
     return await runFusionWindowPerDay({
       slices,
@@ -281,7 +281,7 @@ async function runFusionFullRangeStationBatches(params: {
   /** 省略時は getLocalFusionStationBatchSize()。8一括失敗時の 4+4 分割用 */
   stationBatchSize?: number;
 }): Promise<{ step: ChunkCollectStep; flowAborted: boolean }> {
-  const batchSize = params.stationBatchSize ?? getLocalFusionStationBatchSize();
+  const batchSize = params.stationBatchSize ?? getFusionFullRangeBatchSize();
   const batches: { stationNes: string[]; label: string }[] = [];
   for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i += batchSize) {
     const chunk = FUSION_SOLAR_STATIONS.slice(i, i + batchSize);
@@ -430,7 +430,7 @@ async function runFusionFullRangeOnce(params: {
       url: params.fullRangePostUrl,
       body,
       signal: params.signal,
-      maxAttempts: 5,
+      maxAttempts: getFusionWindowMaxAttempts(),
     });
     const ok = Boolean(
       out.res.ok &&

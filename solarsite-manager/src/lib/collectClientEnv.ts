@@ -21,9 +21,18 @@ export function isVercelHostedClient(): boolean {
   return process.env.NEXT_PUBLIC_VERCEL === "1";
 }
 
-/** FusionSolar を日次 window に分割するか（Vercel 本番向け） */
+/**
+ * FusionSolar を日次 window に分割するか。
+ * 既定は false（開発と同じ期間一括・4+4）。`NEXT_PUBLIC_FUSION_DAY_WINDOW=1` で旧日次モード。
+ */
+export function shouldUseFusionDayWindowClient(): boolean {
+  if (typeof window === "undefined") return false;
+  return process.env.NEXT_PUBLIC_FUSION_DAY_WINDOW?.trim() === "1";
+}
+
+/** @deprecated 名称は歴史的経緯。true のときのみ日次 window */
 export function shouldSplitFusionByStationClient(): boolean {
-  return isVercelHostedClient();
+  return shouldUseFusionDayWindowClient();
 }
 
 /** localhost では期間全体を1リクエストで取得（日ごと window だと月30日×7分で非現実的） */
@@ -38,9 +47,14 @@ export function getFusionStationsPerVercelBatch(): number {
   return isVercelHostedClient() ? 4 : FUSION_SOLAR_STATIONS.length;
 }
 
-/** localhost: 1リクエストあたりの発電所数（8一括を試し、失敗時のみ4+4に分割） */
+/** 期間一括取得の1リクエストあたりの発電所数（本番は最初から4+4、開発は8一括→失敗時4+4） */
+export function getFusionFullRangeBatchSize(): number {
+  return isVercelHostedClient() ? 4 : FUSION_SOLAR_STATIONS.length;
+}
+
+/** @deprecated getFusionFullRangeBatchSize を使用 */
 export function getLocalFusionStationBatchSize(): number {
-  return isVercelHostedClient() ? FUSION_SOLAR_STATIONS.length : FUSION_SOLAR_STATIONS.length;
+  return getFusionFullRangeBatchSize();
 }
 
 /** localhost: Fusion バッチ間の待機（ms） */
