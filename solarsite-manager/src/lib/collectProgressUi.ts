@@ -31,7 +31,19 @@ export function formatProdCollectTimeHint(rangeStart: string, rangeEnd: string):
   if (!isVercelHostedClient()) return null;
   const { min, max } = estimateProdFullCollectMinutes(rangeStart, rangeEnd);
   const fusionBatches = countFusionVercelBatches(rangeStart, rangeEnd);
-  return `本番サイトでは全体でおおよそ ${min}〜${max} 分かかります（FusionSolar は ${fusionBatches} 日分＝${fusionBatches} リクエスト）。タブを閉じずにお待ちください。`;
+  const fusionOnly = formatFusionOnlyTimeHint(rangeStart, rangeEnd);
+  const allHint = `全データ一括（本番）: おおよそ ${min}〜${max} 分（FusionSolar は ${fusionBatches} 日分）。`;
+  return fusionOnly ? `${allHint}\n${fusionOnly}` : allHint;
+}
+
+/** FusionSolar 個別取得の所要時間目安（本番・日次 window + リトライ込み） */
+export function formatFusionOnlyTimeHint(rangeStart: string, rangeEnd: string): string | null {
+  if (!isVercelHostedClient()) return null;
+  const days = countFusionVercelBatches(rangeStart, rangeEnd);
+  if (days <= 0) return null;
+  const min = Math.max(5, Math.round(days * 2.5));
+  const max = Math.max(min + 10, Math.round(days * 7));
+  return `FusionSolar 個別取得（本番）: ${days} 日分でおおよそ ${min}〜${max} 分。進捗は日ごとに更新されます。タブを閉じないでください。`;
 }
 
 export function fusionChunkStallWarning(

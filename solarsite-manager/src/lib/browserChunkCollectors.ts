@@ -557,14 +557,18 @@ async function runFusionWindowPerDay(params: {
     return { ok, msg: detailMsg, rec, err, label };
   };
 
-  const runPerStationFallback = async (sl: DateSlice): Promise<SliceCollectOutcome> => {
+  const runPerStationFallback = async (
+    sl: DateSlice,
+    stations: ReadonlyArray<(typeof FUSION_SOLAR_STATIONS)[number]>,
+    prior?: { rec: number; err: number }
+  ): Promise<SliceCollectOutcome> => {
     let fallbackRec = 0;
     let fallbackErr = 0;
     const fallbackFailures: string[] = [];
-    for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i++) {
+    for (let i = 0; i < stations.length; i++) {
       if (params.signal.aborted) break;
       if (i > 0) await new Promise((r) => setTimeout(r, 900));
-      const station = FUSION_SOLAR_STATIONS[i]!;
+      const station = stations[i]!;
       let part = await runOneWindowCall(sl, [station.ne], { maxAttempts: 2 });
       if (!part.ok) {
         const stationOut = await fetchCollectPostJsonWithRetries({
@@ -609,15 +613,15 @@ async function runFusionWindowPerDay(params: {
       fallbackErr += part.err;
       if (!part.ok) fallbackFailures.push(`${part.label}: ${part.msg}`);
     }
-    const minRecAll = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, FUSION_SOLAR_STATIONS.length);
-    const ok = fallbackFailures.length === 0 && fallbackRec >= minRecAll;
+    const minRec = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, stations.length);
+    const ok = fallbackFailures.length === 0 && fallbackRec >= minRec;
     return {
       ok,
       msg: ok
-        ? `${dateSliceLabel(sl)}: 発電所単位で回復`
+        ? `${dateSliceLabel(sl)}: 発電所単位で回復（${stations.length}発電所）`
         : fallbackFailures.join("\n"),
-      rec: fallbackRec,
-      err: fallbackErr,
+      rec: (prior?.rec ?? 0) + fallbackRec,
+      err: (prior?.err ?? 0) + fallbackErr,
       label: dateSliceLabel(sl),
     };
   };
@@ -627,12 +631,13 @@ async function runFusionWindowPerDay(params: {
     if (allStations.ok) return allStations;
 
     if (FUSION_SOLAR_STATIONS.length <= batchSize) {
-      return await runPerStationFallback(sl);
+      return await runPerStationFallback(sl, FUSION_SOLAR_STATIONS);
     }
 
     let splitRec = 0;
     let splitErr = 0;
     const splitFailures: string[] = [];
+    const failedStations: Array<(typeof FUSION_SOLAR_STATIONS)[number]> = [];
     for (let i = 0; i < FUSION_SOLAR_STATIONS.length; i += batchSize) {
       if (params.signal.aborted) break;
       if (i > 0) await new Promise((r) => setTimeout(r, 1200));
@@ -641,7 +646,10 @@ async function runFusionWindowPerDay(params: {
       const part = await runOneWindowCall(sl, stationNes);
       splitRec += part.rec;
       splitErr += part.err;
-      if (!part.ok) splitFailures.push(part.label + ": " + part.msg);
+      if (!part.ok) {
+        splitFailures.push(part.label + ": " + part.msg);
+        failedStations.push(...chunk);
+      }
     }
     const minRecAll = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, FUSION_SOLAR_STATIONS.length);
     const ok = splitFailures.length === 0 && splitRec >= minRecAll;
@@ -654,7 +662,9 @@ async function runFusionWindowPerDay(params: {
         label: dateSliceLabel(sl),
       };
     }
-    return await runPerStationFallback(sl);
+    const retryStations =
+      failedStations.length > 0 ? failedStations : [...FUSION_SOLAR_STATIONS];
+    return await runPerStationFallback(sl, retryStations, { rec: splitRec, err: splitErr });
   };
 
   const abortedStep = (): { step: ChunkCollectStep; flowAborted: boolean } => {

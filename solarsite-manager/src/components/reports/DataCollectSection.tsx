@@ -7,6 +7,7 @@ import {
   runFusionSolarDayWindowChunks,
   runLaplaceDayChunks,
   runSmaDayChunks,
+  type CollectChunkProgress,
 } from "@/lib/browserChunkCollectors";
 import { REPORTS_CARD_FOOTER_MIN_HEIGHT_PX } from "@/lib/reportsCardLayout";
 import { shouldUseClientChunkedFullCollect } from "@/lib/collectAllClientStrategy";
@@ -56,9 +57,11 @@ export default function DataCollectSection() {
   const [allCancelRequested, setAllCancelRequested] = useState(false);
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const allCollectAbortRef = useRef<AbortController | null>(null);
+  const fusionIndivAbortRef = useRef<AbortController | null>(null);
   const allClientOrchestrationActiveRef = useRef(false);
   const clientAllProgressForUiRef = useRef<ClientAllCollectProgress | null>(null);
   const fusionChunkProgressRef = useRef<{ key: string; changedAt: number }>({ key: "", changedAt: 0 });
+  const [fusionIndivProgress, setFusionIndivProgress] = useState<CollectChunkProgress | null>(null);
   const [prodTimeHint, setProdTimeHint] = useState<string | null>(() =>
     typeof window !== "undefined" && isVercelHostedClient()
       ? formatProdCollectTimeHint(defaultCollectDateRange().startDate, defaultCollectDateRange().endDate)
@@ -156,22 +159,28 @@ export default function DataCollectSection() {
     }
   }, [range.startDate, range.endDate]);
 
-  // FusionSolar が20分以上同じチャンクで止まったら fetch を自動中断（本番の長時間フリーズ対策）
+  // FusionSolar が22分以上同じチャンクで止まったら fetch を自動中断（一括・個別）
   useEffect(() => {
-    if (!allLocked || !allClientOrchestrationActiveRef.current) return;
+    const fusionActive =
+      (allLocked && allClientOrchestrationActiveRef.current) || loading === "FusionSolar";
+    if (!fusionActive) return;
     const timer = setInterval(() => {
       const p = clientAllProgressForUiRef.current;
-      if (p?.currentStepKey !== "fusion-solar") return;
+      const stepKey =
+        loading === "FusionSolar" ? "fusion-solar" : p?.currentStepKey;
+      if (stepKey !== "fusion-solar") return;
       const { key, changedAt } = fusionChunkProgressRef.current;
       if (!key || changedAt <= 0) return;
       if (Date.now() - changedAt < FUSION_CHUNK_STALL_ABORT_MS) return;
-      if (!allCollectAbortRef.current || allCollectAbortRef.current.signal.aborted) return;
-      allCollectAbortRef.current.abort(
+      const abortRef =
+        loading === "FusionSolar" ? fusionIndivAbortRef : allCollectAbortRef;
+      if (!abortRef.current || abortRef.current.signal.aborted) return;
+      abortRef.current.abort(
         new DOMException("FusionSolar の進捗停止を検知したため自動中断しました。", "AbortError")
       );
     }, 30_000);
     return () => clearInterval(timer);
-  }, [allLocked]);
+  }, [allLocked, loading]);
 
   const formatClientOrchestrationLockMessage = (p: ClientAllCollectProgress, parallel: string) => {
     const label =
@@ -192,7 +201,15 @@ export default function DataCollectSection() {
     return parts.join("\n\n");
   };
 
-  const trackFusionChunkProgress = (p: ClientAllCollectProgress) => {
+  const trackFusionChunkProgress = (p: CollectChunkProgress) => {
+    const key = p.label;
+    if (key !== fusionChunkProgressRef.current.key) {
+      fusionChunkProgressRef.current = { key, changedAt: Date.now() };
+    }
+    setFusionIndivProgress(p);
+  };
+
+  const trackFusionChunkProgressFromOrchestration = (p: ClientAllCollectProgress) => {
     if (p.currentStepKey === "fusion-solar" && p.detail) {
       const key = p.detail;
       if (key !== fusionChunkProgressRef.current.key) {
@@ -202,6 +219,15 @@ export default function DataCollectSection() {
       fusionChunkProgressRef.current = { key: "", changedAt: 0 };
     }
   };
+
+  const fusionIndivStallWarning =
+    loading === "FusionSolar" && fusionChunkProgressRef.current.key
+      ? fusionChunkStallWarning(
+          "fusion-solar",
+          fusionChunkProgressRef.current.key,
+          fusionChunkProgressRef.current.changedAt
+        )
+      : null;
 
   const handleCollect = async (systemName: string) => {
     if (systemName === "all" && allLocked) {
@@ -237,7 +263,7 @@ export default function DataCollectSection() {
               resolveApiMessage,
               onProgress: (p) => {
                 clientAllProgressForUiRef.current = p;
-                trackFusionChunkProgress(p);
+                trackFusionChunkProgressFromOrchestration(p);
                 setAllLocked(true);
                 setRunningKind("all");
                 setLockMessage(formatClientOrchestrationLockMessage(p, ""));
@@ -366,22 +392,35 @@ export default function DataCollectSection() {
 
       if (systemName === "FusionSolar") {
         const noop = () => {};
-        const { step } = await runFusionSolarDayWindowChunks({
-          rangeStart: range.startDate,
-          rangeEnd: range.endDate,
-          signal: new AbortController().signal,
-          stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
-          windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
-          fullRangePostUrl: FUSION_SOLAR_FULL_RANGE_POST_URL,
-          splitByStation: shouldSplitFusionByStationClient(),
-          resolveApiMessage,
-          onSetInterrupted: noop,
-        });
-        const detail = `（保存 ${step.recordCount} 件 / スキップ ${step.errorCount} 件）`;
-        if (step.ok) {
-          alert(`FusionSolar: ${step.message}\n${detail}`);
-        } else {
-          alert(`FusionSolarのエラー:\n${step.message}\n${detail}`);
+        fusionChunkProgressRef.current = { key: "", changedAt: 0 };
+        setFusionIndivProgress(null);
+        const ac = new AbortController();
+        fusionIndivAbortRef.current = ac;
+        try {
+          const { step, flowAborted } = await runFusionSolarDayWindowChunks({
+            rangeStart: range.startDate,
+            rangeEnd: range.endDate,
+            signal: ac.signal,
+            stationPostUrl: FUSION_SOLAR_STATION_POST_URL,
+            windowPostUrl: FUSION_SOLAR_WINDOW_POST_URL,
+            fullRangePostUrl: FUSION_SOLAR_FULL_RANGE_POST_URL,
+            splitByStation: shouldSplitFusionByStationClient(),
+            resolveApiMessage,
+            onSetInterrupted: noop,
+            onChunkProgress: trackFusionChunkProgress,
+          });
+          const detail = `（保存 ${step.recordCount} 件 / スキップ ${step.errorCount} 件）`;
+          if (flowAborted) {
+            alert(`FusionSolar: 取得が中断されました。\n${step.message}\n${detail}`);
+          } else if (step.ok) {
+            alert(`FusionSolar: ${step.message}\n${detail}`);
+          } else {
+            alert(`FusionSolarのエラー:\n${step.message}\n${detail}`);
+          }
+        } finally {
+          fusionIndivAbortRef.current = null;
+          fusionChunkProgressRef.current = { key: "", changedAt: 0 };
+          setFusionIndivProgress(null);
         }
         return;
       }
@@ -448,6 +487,10 @@ export default function DataCollectSection() {
   };
 
   const handleCancelAll = async () => {
+    if (loading === "FusionSolar" && fusionIndivAbortRef.current) {
+      fusionIndivAbortRef.current.abort();
+      return;
+    }
     if (loading === "all" && allCollectAbortRef.current) {
       allCollectAbortRef.current.abort();
       try {
@@ -695,8 +738,23 @@ export default function DataCollectSection() {
         </div>
 
         {prodTimeHint ? (
-          <p style={{ fontSize: "11px", color: "#64748b", margin: "0 0 16px", lineHeight: 1.5 }}>
+          <p
+            style={{
+              fontSize: "11px",
+              color: "#64748b",
+              margin: loading === "FusionSolar" && fusionIndivProgress ? "0 0 8px" : "0 0 16px",
+              lineHeight: 1.5,
+              whiteSpace: "pre-line",
+            }}
+          >
             {prodTimeHint}
+          </p>
+        ) : null}
+
+        {loading === "FusionSolar" && fusionIndivProgress ? (
+          <p style={{ fontSize: "11px", color: "#0369a1", margin: "0 0 16px", lineHeight: 1.5, whiteSpace: "pre-line" }}>
+            {`FusionSolar 取得中: ${fusionIndivProgress.chunkIndex}/${fusionIndivProgress.chunkTotal} 日目（${fusionIndivProgress.label}）`}
+            {fusionIndivStallWarning ? `\n${fusionIndivStallWarning}` : ""}
           </p>
         ) : null}
 
@@ -734,8 +792,14 @@ export default function DataCollectSection() {
             <button
               style={cancelBtnStyle}
               onClick={() => void handleCancelAll()}
-              disabled={(!allLocked && loading !== "all") || allCancelRequested}
-              title={!allLocked && loading !== "all" ? "実行中のみ取消できます" : undefined}
+              disabled={
+                ((!allLocked && loading !== "all" && loading !== "FusionSolar") || allCancelRequested)
+              }
+              title={
+                !allLocked && loading !== "all" && loading !== "FusionSolar"
+                  ? "実行中のみ取消できます"
+                  : undefined
+              }
             >
               {allCancelRequested ? "取消受付済み" : "実行取消"}
             </button>
