@@ -11,7 +11,7 @@ import {
 } from "@/lib/collectClientEnv";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
-import { computeFusionExpectedMinRecords, diffDaysInclusiveYmd } from "@/lib/fusionSolarCollectBudget";
+import { computeFusionExpectedMinRecords } from "@/lib/fusionSolarCollectBudget";
 
 function collectFetchSignal(userSignal: AbortSignal): AbortSignal {
   const timeoutMs = getCollectChunkFetchTimeoutMs();
@@ -251,6 +251,7 @@ export async function runFusionSolarDayWindowChunks(params: {
         rangeStart: params.rangeStart,
         rangeEnd: params.rangeEnd,
         stationPostUrl: params.stationPostUrl,
+        windowPostUrl: params.windowPostUrl,
         signal: params.signal,
         resolveApiMessage: params.resolveApiMessage,
         onSetInterrupted: params.onSetInterrupted,
@@ -292,6 +293,7 @@ async function runFusionStationRangeBatches(params: {
   rangeStart: string;
   rangeEnd: string;
   stationPostUrl: string;
+  windowPostUrl: string;
   signal: AbortSignal;
   resolveApiMessage: (data: unknown, fallback: string, httpStatus?: number) => string;
   onSetInterrupted: (v: boolean) => void;
@@ -356,36 +358,90 @@ async function runFusionStationRangeBatches(params: {
     return { ok, msg: detailMsg, rec, err, label };
   };
 
+  const runStationDailyWindowFallback = async (
+    station: (typeof FUSION_SOLAR_STATIONS)[number],
+    sl: DateSlice
+  ): Promise<SliceCollectOutcome> => {
+    const daySlices = eachMaxDaySliceInRange(sl.startDate, sl.endDate, 1);
+    let rec = 0;
+    let err = 0;
+    const dayFailures: string[] = [];
+    for (let i = 0; i < daySlices.length; i++) {
+      if (params.signal.aborted) break;
+      if (i > 0) await new Promise((r) => setTimeout(r, 700));
+      const d = daySlices[i]!;
+      const out = await fetchCollectPostJsonWithRetries({
+        url: params.windowPostUrl,
+        body: { startDate: d.startDate, endDate: d.endDate, stationNeList: [station.ne] },
+        signal: params.signal,
+        maxAttempts: getFusionWindowMaxAttempts(),
+      });
+      const apiOk = Boolean(
+        out.res.ok &&
+          out.data &&
+          typeof out.data === "object" &&
+          (out.data as { ok?: boolean }).ok === true
+      );
+      const msg = params.resolveApiMessage(
+        out.data,
+        out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+        out.res.status
+      );
+      const partRec =
+        out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+          ? (out.data as { recordCount: number }).recordCount
+          : 0;
+      const partErr =
+        out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+          ? (out.data as { errorCount: number }).errorCount
+          : 0;
+      rec += partRec;
+      err += partErr;
+      const label = `${station.name} ${d.startDate}`;
+      if (!apiOk || partRec < 1 || isFusionWallCappedMessage(msg)) {
+        dayFailures.push(`${label}: ${isFusionWallCappedMessage(msg) ? msg : !apiOk ? msg : `保存 ${partRec}件`}`);
+      }
+    }
+    const minRecAll = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, 1);
+    const ok = dayFailures.length === 0 && rec >= minRecAll;
+    return {
+      ok,
+      msg: ok ? `${station.name} ${dateSliceLabel(sl)}: 日次windowで回復` : dayFailures.join("\n"),
+      rec,
+      err,
+      label: `${station.name} ${dateSliceLabel(sl)}`,
+    };
+  };
+
   const runStationSliceAdaptive = async (
     station: (typeof FUSION_SOLAR_STATIONS)[number],
     sl: DateSlice
   ): Promise<SliceCollectOutcome> => {
     const first = await runStationSliceOnce(station, sl);
     if (first.ok) return first;
-    const days = diffDaysInclusiveYmd(sl.startDate, sl.endDate);
-    if (days <= 7) return first;
+    return await runStationDailyWindowFallback(station, sl);
+  };
 
-    let splitRec = 0;
-    let splitErr = 0;
-    const splitFailures: string[] = [];
-    const subSlices = eachMaxDaySliceInRange(sl.startDate, sl.endDate, 7);
-    for (let i = 0; i < subSlices.length; i++) {
-      if (params.signal.aborted) break;
-      if (i > 0) await new Promise((r) => setTimeout(r, chunkDelayMs));
-      const part = await runStationSliceOnce(station, subSlices[i]!);
-      splitRec += part.rec;
-      splitErr += part.err;
-      if (!part.ok) splitFailures.push(`${part.label}: ${part.msg}`);
+  type FailedStationSlice = { station: (typeof FUSION_SOLAR_STATIONS)[number]; sl: DateSlice };
+  const failedSlices: FailedStationSlice[] = [];
+
+  const processStationSlice = async (
+    station: (typeof FUSION_SOLAR_STATIONS)[number],
+    sl: DateSlice,
+    bumpProgress: boolean
+  ): Promise<SliceCollectOutcome> => {
+    if (bumpProgress) {
+      if (chunkIdx > 0 && chunkDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, chunkDelayMs));
+      }
+      chunkIdx++;
+      params.onChunkProgress?.({
+        chunkIndex: chunkIdx,
+        chunkTotal: totalChunks,
+        label: `${station.name} ${dateSliceLabel(sl)}`,
+      });
     }
-    const minRec = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, 1);
-    const ok = splitFailures.length === 0 && splitRec >= minRec;
-    return {
-      ok,
-      msg: ok ? `${station.name} ${dateSliceLabel(sl)}: 7日分割で回復` : splitFailures.join("\n"),
-      rec: splitRec,
-      err: splitErr,
-      label: `${station.name} ${dateSliceLabel(sl)}`,
-    };
+    return await runStationSliceAdaptive(station, sl);
   };
 
   for (const station of FUSION_SOLAR_STATIONS) {
@@ -407,22 +463,13 @@ async function runFusionStationRangeBatches(params: {
         };
       }
 
-      if (chunkIdx > 0 && chunkDelayMs > 0) {
-        await new Promise((r) => setTimeout(r, chunkDelayMs));
-      }
-      chunkIdx++;
-      params.onChunkProgress?.({
-        chunkIndex: chunkIdx,
-        chunkTotal: totalChunks,
-        label: `${station.name} ${dateSliceLabel(sl)}`,
-      });
-
       try {
-        const result = await runStationSliceAdaptive(station, sl);
+        const result = await processStationSlice(station, sl, true);
         totalRec += result.rec;
         totalErr += result.err;
         if (!result.ok) {
           failures.push(`${result.label}: ${result.msg}`);
+          failedSlices.push({ station, sl });
         }
       } catch (e) {
         if (isAbortError(e)) {
@@ -439,6 +486,37 @@ async function runFusionStationRangeBatches(params: {
           };
         }
         failures.push(`${station.name} ${dateSliceLabel(sl)}: ${e instanceof Error ? e.message : String(e)}`);
+        failedSlices.push({ station, sl });
+      }
+    }
+  }
+
+  const recoveredLabels = new Set<string>();
+  for (const { station, sl } of failedSlices) {
+    if (params.signal.aborted) break;
+    await new Promise((r) => setTimeout(r, 1200));
+    try {
+      const result = await processStationSlice(station, sl, false);
+      totalRec += result.rec;
+      totalErr += result.err;
+      if (result.ok) {
+        recoveredLabels.add(`${station.name} ${dateSliceLabel(sl)}`);
+      } else {
+        const line = `${result.label}: ${result.msg}`;
+        if (!failures.some((f) => f.startsWith(result.label))) failures.push(line);
+      }
+    } catch {
+      // 初回 failures を維持
+    }
+  }
+  if (recoveredLabels.size > 0) {
+    for (let i = failures.length - 1; i >= 0; i--) {
+      const line = failures[i] ?? "";
+      for (const label of recoveredLabels) {
+        if (line.startsWith(label)) {
+          failures.splice(i, 1);
+          break;
+        }
       }
     }
   }

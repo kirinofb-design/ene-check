@@ -23,6 +23,8 @@ export function computeFusionExpectedMinRecords(
 ): number {
   const days = diffDaysInclusiveYmd(startDate, endDate);
   if (days <= 0 || stationCount <= 0) return 1;
+  // 1発電所×N日は全日必須（月別表のページ欠けを検知して再試行させる）
+  if (stationCount === 1) return days;
   // 本番 window API（1日×N発電所）は欠測1件でも再試行させるため全件必須
   if (days === 1) return stationCount;
   return Math.max(1, Math.floor(days * stationCount * 0.85));

@@ -512,6 +512,8 @@ async function collectFusionDailyRowsForMissingDates(params: {
   rangeEnd: Date;
   userId: string;
   stationName: string;
+  /** 残り実行時間（ms）。不足時は未取得日を残して呼び出し元で errorCount に計上 */
+  getRemainingMs?: () => number;
 }): Promise<Array<{ dateStr: string; pcsKwhText: string }>> {
   if (params.missingYmds.length === 0) return [];
 
@@ -529,6 +531,18 @@ async function collectFusionDailyRowsForMissingDates(params: {
 
   for (let i = 0; i < params.missingYmds.length; i++) {
     throwIfAllCollectCancelled(params.userId);
+    if (params.getRemainingMs && params.getRemainingMs() < 12_000) {
+      logger.warn("fusionSolarCollector: daily fallback stopped (wall budget low)", {
+        userId: params.userId,
+        extra: {
+          station: params.stationName,
+          yearMonth: params.yearMonth,
+          processed: i,
+          remaining: params.missingYmds.length - i,
+        },
+      });
+      break;
+    }
     const ymd = params.missingYmds[i]!;
     if (i > 0) await params.page.waitForTimeout(450);
 
@@ -1476,6 +1490,7 @@ export async function runFusionSolarCollector(
                 rangeEnd: end,
                 userId,
                 stationName: station.name,
+                getRemainingMs: () => wallBudgetMs - (Date.now() - wallStarted),
               });
               if (dailyRows.length > 0) {
                 allRows = dedupeFusionRowsPreferringNonEmptyPcs([...allRows, ...dailyRows]);

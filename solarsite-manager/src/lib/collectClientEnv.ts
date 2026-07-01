@@ -59,7 +59,7 @@ export function getLocalFusionStationBatchSize(): number {
 
 /** 本番: 1発電所あたりの期間チャンク日数（300s 内に収める） */
 export function getFusionStationChunkDays(): number {
-  return isVercelHostedClient() ? 14 : 31;
+  return isVercelHostedClient() ? 7 : 31;
 }
 
 /** 本番: 発電所×期間チャンク間の待機（ms） */
