@@ -358,6 +358,86 @@ async function runFusionStationRangeBatches(params: {
     return { ok, msg: detailMsg, rec, err, label };
   };
 
+  const runSingleDayWindow = async (
+    station: (typeof FUSION_SOLAR_STATIONS)[number],
+    d: DateSlice
+  ): Promise<SliceCollectOutcome> => {
+    const out = await fetchCollectPostJsonWithRetries({
+      url: params.windowPostUrl,
+      body: { startDate: d.startDate, endDate: d.endDate, stationNeList: [station.ne] },
+      signal: params.signal,
+      maxAttempts: getFusionWindowMaxAttempts(),
+    });
+    const apiOk = Boolean(
+      out.res.ok &&
+        out.data &&
+        typeof out.data === "object" &&
+        (out.data as { ok?: boolean }).ok === true
+    );
+    const msg = params.resolveApiMessage(
+      out.data,
+      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+      out.res.status
+    );
+    const rec =
+      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+        ? (out.data as { recordCount: number }).recordCount
+        : 0;
+    const err =
+      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+        ? (out.data as { errorCount: number }).errorCount
+        : 0;
+    const label = `${station.name} ${d.startDate}`;
+    const ok = apiOk && rec >= 1 && !isFusionWallCappedMessage(msg);
+    return {
+      ok,
+      msg: isFusionWallCappedMessage(msg) ? msg : !apiOk ? msg : rec < 1 ? `保存 ${rec}件` : msg,
+      rec,
+      err,
+      label,
+    };
+  };
+
+  const runSingleDayStation = async (
+    station: (typeof FUSION_SOLAR_STATIONS)[number],
+    d: DateSlice
+  ): Promise<SliceCollectOutcome> => {
+    const out = await fetchCollectPostJsonWithRetries({
+      url: params.stationPostUrl,
+      body: { startDate: d.startDate, endDate: d.endDate, stationNe: station.ne },
+      signal: params.signal,
+      maxAttempts: getFusionWindowMaxAttempts(),
+    });
+    const apiOk = Boolean(
+      out.res.ok &&
+        out.data &&
+        typeof out.data === "object" &&
+        (out.data as { ok?: boolean }).ok === true
+    );
+    const msg = params.resolveApiMessage(
+      out.data,
+      out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
+      out.res.status
+    );
+    const rec =
+      out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
+        ? (out.data as { recordCount: number }).recordCount
+        : 0;
+    const err =
+      out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
+        ? (out.data as { errorCount: number }).errorCount
+        : 0;
+    const label = `${station.name} ${d.startDate}（station）`;
+    const ok = apiOk && rec >= 1 && !isFusionWallCappedMessage(msg);
+    return {
+      ok,
+      msg: isFusionWallCappedMessage(msg) ? msg : !apiOk ? msg : rec < 1 ? `保存 ${rec}件` : msg,
+      rec,
+      err,
+      label,
+    };
+  };
+
   const runStationDailyWindowFallback = async (
     station: (typeof FUSION_SOLAR_STATIONS)[number],
     sl: DateSlice
@@ -366,47 +446,36 @@ async function runFusionStationRangeBatches(params: {
     let rec = 0;
     let err = 0;
     const dayFailures: string[] = [];
+    const failedDays: DateSlice[] = [];
     for (let i = 0; i < daySlices.length; i++) {
       if (params.signal.aborted) break;
       if (i > 0) await new Promise((r) => setTimeout(r, 700));
       const d = daySlices[i]!;
-      const out = await fetchCollectPostJsonWithRetries({
-        url: params.windowPostUrl,
-        body: { startDate: d.startDate, endDate: d.endDate, stationNeList: [station.ne] },
-        signal: params.signal,
-        maxAttempts: getFusionWindowMaxAttempts(),
-      });
-      const apiOk = Boolean(
-        out.res.ok &&
-          out.data &&
-          typeof out.data === "object" &&
-          (out.data as { ok?: boolean }).ok === true
-      );
-      const msg = params.resolveApiMessage(
-        out.data,
-        out.res.ok ? "処理が完了しました。" : `APIエラー（HTTP ${out.res.status}）`,
-        out.res.status
-      );
-      const partRec =
-        out.data && typeof out.data === "object" && typeof (out.data as { recordCount?: unknown }).recordCount === "number"
-          ? (out.data as { recordCount: number }).recordCount
-          : 0;
-      const partErr =
-        out.data && typeof out.data === "object" && typeof (out.data as { errorCount?: unknown }).errorCount === "number"
-          ? (out.data as { errorCount: number }).errorCount
-          : 0;
-      rec += partRec;
-      err += partErr;
-      const label = `${station.name} ${d.startDate}`;
-      if (!apiOk || partRec < 1 || isFusionWallCappedMessage(msg)) {
-        dayFailures.push(`${label}: ${isFusionWallCappedMessage(msg) ? msg : !apiOk ? msg : `保存 ${partRec}件`}`);
+      const part = await runSingleDayWindow(station, d);
+      rec += part.rec;
+      err += part.err;
+      if (!part.ok) {
+        failedDays.push(d);
+      }
+    }
+    for (let i = 0; i < failedDays.length; i++) {
+      if (params.signal.aborted) break;
+      if (i > 0) await new Promise((r) => setTimeout(r, 900));
+      const d = failedDays[i]!;
+      const part = await runSingleDayStation(station, d);
+      rec += part.rec;
+      err += part.err;
+      if (!part.ok) {
+        dayFailures.push(`${part.label}: ${part.msg}`);
       }
     }
     const minRecAll = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, 1);
     const ok = dayFailures.length === 0 && rec >= minRecAll;
     return {
       ok,
-      msg: ok ? `${station.name} ${dateSliceLabel(sl)}: 日次windowで回復` : dayFailures.join("\n"),
+      msg: ok
+        ? `${station.name} ${dateSliceLabel(sl)}: 日次で回復`
+        : dayFailures.join("\n"),
       rec,
       err,
       label: `${station.name} ${dateSliceLabel(sl)}`,

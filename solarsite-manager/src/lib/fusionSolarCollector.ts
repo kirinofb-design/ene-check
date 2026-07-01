@@ -987,6 +987,8 @@ export async function runFusionSolarCollector(
   let recordCount = 0;
   let errorCount = 0;
   let consecutiveLoginLoopCount = 0;
+  const rangeYmds = listYmdsInUtcRange(start, end);
+  const savedYmdsByStationNe = new Map<string, Set<string>>();
   // Vercel の実行時間上限に収めるため、壁時計は関数実行開始時点から計測する
   const wallStarted = Date.now();
 
@@ -1159,6 +1161,9 @@ export async function runFusionSolarCollector(
         ? new Set(options.stationNeAllowList)
         : null;
     const stations = allowSet ? allStations.filter((s) => allowSet.has(s.ne)) : allStations;
+    for (const s of stations) {
+      savedYmdsByStationNe.set(s.ne, new Set());
+    }
 
     // ログイン直後は最初の report 遷移が不安定なことがあるため、
     // 末尾（既存データが多い＝比較的安定）発電所で1回セッションを温めてから本処理へ入る
@@ -1592,28 +1597,39 @@ export async function runFusionSolarCollector(
               }),
             PRISMA_RETRY_COLLECTOR
           );
+          if (ymdNorm) {
+            savedYmdsByStationNe.get(station.ne)?.add(ymdNorm);
+          }
           recordCount++;
         }
         await refreshStorageStateFromContext();
       }
     }
 
+    const expectedMin =
+      options?.expectedMinRecords ?? rangeYmds.length * stations.length;
+    const incompleteStations = stations.filter((s) => {
+      const saved = savedYmdsByStationNe.get(s.ne)?.size ?? 0;
+      return saved < rangeYmds.length;
+    });
+    const allDaysSaved = incompleteStations.length === 0 && stations.length > 0;
+
     const ok = (() => {
-      const expectedMin = options?.expectedMinRecords;
-      const coverageOk = expectedMin == null || recordCount >= expectedMin;
-      const hasData = recordCount > 0 || errorCount === 0;
-      if (!coverageOk) {
-        return false;
-      }
-      return hasData;
+      if (!allDaysSaved) return false;
+      const coverageOk = recordCount >= expectedMin;
+      return coverageOk && recordCount > 0;
     })();
     return {
       ok,
       message: ok
         ? `FusionSolarのデータ取得が完了しました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。`
-        : options?.expectedMinRecords != null && recordCount < options.expectedMinRecords
-          ? `FusionSolarのデータ取得が不完全です（保存: ${recordCount}件 / 目安: ${options.expectedMinRecords}件以上）。期間を短く分けて再実行してください。`
-          : `FusionSolarのデータ取得で有効データを保存できませんでした（保存: ${recordCount}件 / スキップ: ${errorCount}件）。期間を短くして再実行してください。`,
+        : incompleteStations.length > 0
+          ? `FusionSolarのデータ取得が不完全です（${incompleteStations
+              .map((s) => FUSION_SOLAR_DISPLAY_NAME_MAP[s.name] ?? s.name)
+              .join("、")} で ${rangeYmds.length} 日中の保存が不足）。期間を短く分けて再実行してください。`
+          : options?.expectedMinRecords != null && recordCount < options.expectedMinRecords
+            ? `FusionSolarのデータ取得が不完全です（保存: ${recordCount}件 / 目安: ${options.expectedMinRecords}件以上）。期間を短く分けて再実行してください。`
+            : `FusionSolarのデータ取得で有効データを保存できませんでした（保存: ${recordCount}件 / スキップ: ${errorCount}件）。期間を短くして再実行してください。`,
       recordCount,
       errorCount,
     };
