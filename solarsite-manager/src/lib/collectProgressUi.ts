@@ -38,8 +38,8 @@ export function estimateProdFullCollectMinutes(
   const fusionBatches = countFusionClientBatches(rangeStart, rangeEnd);
   const nonFusionMin = 12;
   const nonFusionMax = 25;
-  const perFusionBatchMin = shouldUseFusionDayWindowClient() ? 2 : isVercelHostedClient() ? 2 : 8;
-  const perFusionBatchMax = shouldUseFusionDayWindowClient() ? 4 : isVercelHostedClient() ? 4 : 18;
+  const perFusionBatchMin = shouldUseFusionDayWindowClient() ? 2 : isVercelHostedClient() ? 3 : 8;
+  const perFusionBatchMax = shouldUseFusionDayWindowClient() ? 4 : isVercelHostedClient() ? 6 : 18;
   return {
     min: Math.round(nonFusionMin + fusionBatches * perFusionBatchMin),
     max: Math.round(nonFusionMax + fusionBatches * perFusionBatchMax),
@@ -53,7 +53,7 @@ export function formatProdCollectTimeHint(rangeStart: string, rangeEnd: string):
   const fusionOnly = formatFusionOnlyTimeHint(rangeStart, rangeEnd);
   const fusionUnit = shouldUseFusionDayWindowClient()
     ? `${fusionBatches} 日分`
-    : `${fusionBatches} チャンク（1発電所×${getFusionStationChunkDays()}日）`;
+    : `${fusionBatches} リクエスト（1発電所×全期間・日別取得）`;
   const allHint = `全データ一括（本番）: おおよそ ${min}〜${max} 分（FusionSolar は ${fusionUnit}）。`;
   return fusionOnly ? `${allHint}\n${fusionOnly}` : allHint;
 }
@@ -69,9 +69,9 @@ export function formatFusionOnlyTimeHint(rangeStart: string, rangeEnd: string): 
     return `FusionSolar 個別取得（本番）: ${days} 日分でおおよそ ${min}〜${max} 分。進捗は日ごとに更新されます。タブを閉じないでください。`;
   }
   const chunks = countFusionClientBatches(rangeStart, rangeEnd);
-  const min = Math.max(15, Math.round(chunks * 2));
-  const max = Math.max(min + 15, Math.round(chunks * 4));
-  return `FusionSolar 個別取得（本番）: ${chunks} チャンク（1発電所×${getFusionStationChunkDays()}日）でおおよそ ${min}〜${max} 分。進捗が更新されるまでタブを閉じないでください。`;
+  const min = Math.max(20, Math.round(chunks * 3));
+  const max = Math.max(min + 10, Math.round(chunks * 6));
+  return `FusionSolar 個別取得（本番）: ${chunks} リクエスト（8発電所×全期間）でおおよそ ${min}〜${max} 分。進捗が更新されるまでタブを閉じないでください。`;
 }
 
 export function fusionChunkStallWarning(

@@ -57,14 +57,14 @@ export function getLocalFusionStationBatchSize(): number {
   return getFusionFullRangeBatchSize();
 }
 
-/** 本番: 1発電所あたりの期間チャンク日数（300s 内に収める） */
+/** 1発電所あたりの期間チャンク日数（日別モードなら全期間を1リクエストに収める） */
 export function getFusionStationChunkDays(): number {
-  return isVercelHostedClient() ? 7 : 31;
+  return 31;
 }
 
 /** 本番: 発電所×期間チャンク間の待機（ms） */
 export function getFusionStationChunkDelayMs(): number {
-  return isVercelHostedClient() ? 900 : 0;
+  return isVercelHostedClient() ? 500 : 0;
 }
 
 /** localhost: Fusion バッチ間の待機（ms） */

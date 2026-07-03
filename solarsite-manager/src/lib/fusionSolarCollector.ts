@@ -1290,7 +1290,7 @@ export async function runFusionSolarCollector(
             break;
           }
           const ymd = rangeYmds[di]!;
-          if (di > 0) await page.waitForTimeout(420);
+          if (di > 0) await page.waitForTimeout(280);
 
           let row: { dateStr: string; pcsKwhText: string } | null = null;
           try {
