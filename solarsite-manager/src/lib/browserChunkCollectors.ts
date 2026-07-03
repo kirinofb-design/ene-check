@@ -11,7 +11,7 @@ import {
 } from "@/lib/collectClientEnv";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
-import { computeFusionExpectedMinRecords } from "@/lib/fusionSolarCollectBudget";
+import { computeFusionExpectedMinRecords, diffDaysInclusiveYmd } from "@/lib/fusionSolarCollectBudget";
 
 function collectFetchSignal(userSignal: AbortSignal): AbortSignal {
   const timeoutMs = getCollectChunkFetchTimeoutMs();
@@ -488,7 +488,36 @@ async function runFusionStationRangeBatches(params: {
   ): Promise<SliceCollectOutcome> => {
     const first = await runStationSliceOnce(station, sl);
     if (first.ok) return first;
-    return await runStationDailyWindowFallback(station, sl);
+
+    const days = diffDaysInclusiveYmd(sl.startDate, sl.endDate);
+    if (days <= 3) {
+      return await runStationDailyWindowFallback(station, sl);
+    }
+
+    // 14日等: 日次window×全日は20分超で中断されるため、7日単位の station API に分割
+    let splitRec = 0;
+    let splitErr = 0;
+    const splitFailures: string[] = [];
+    const subSlices = eachMaxDaySliceInRange(sl.startDate, sl.endDate, 7);
+    for (let i = 0; i < subSlices.length; i++) {
+      if (params.signal.aborted) break;
+      if (i > 0) await new Promise((r) => setTimeout(r, 500));
+      const part = await runStationSliceOnce(station, subSlices[i]!);
+      splitRec += part.rec;
+      splitErr += part.err;
+      if (!part.ok) splitFailures.push(`${part.label}: ${part.msg}`);
+    }
+    const minRec = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, 1);
+    const ok = splitFailures.length === 0 && splitRec >= minRec;
+    return {
+      ok,
+      msg: ok
+        ? `${station.name} ${dateSliceLabel(sl)}: 7日分割で回復`
+        : splitFailures.join("\n"),
+      rec: splitRec,
+      err: splitErr,
+      label: `${station.name} ${dateSliceLabel(sl)}`,
+    };
   };
 
   type FailedStationSlice = { station: (typeof FUSION_SOLAR_STATIONS)[number]; sl: DateSlice };

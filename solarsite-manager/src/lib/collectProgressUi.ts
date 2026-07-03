@@ -9,8 +9,8 @@ import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 /** 同一 Fusion チャンクがこの時間動かなければ「停止の可能性」を表示 */
 export const FUSION_CHUNK_STALL_WARN_MS = 15 * 60 * 1000;
-/** この時間進捗が変わらなければブラウザ側で fetch を自動中断（UIフリーズ防止） */
-export const FUSION_CHUNK_STALL_ABORT_MS = 22 * 60 * 1000;
+/** この時間進捗が変わらなければブラウザ側で fetch を自動中断（一括取得のみ。個別Fusionは手動取消） */
+export const FUSION_CHUNK_STALL_ABORT_MS = 45 * 60 * 1000;
 
 /** Fusion のブラウザ側リクエスト数 */
 export function countFusionClientBatches(rangeStart: string, rangeEnd: string): number {
@@ -53,7 +53,7 @@ export function formatProdCollectTimeHint(rangeStart: string, rangeEnd: string):
   const fusionOnly = formatFusionOnlyTimeHint(rangeStart, rangeEnd);
   const fusionUnit = shouldUseFusionDayWindowClient()
     ? `${fusionBatches} 日分`
-    : `${fusionBatches} リクエスト（1発電所×全期間・日別取得）`;
+    : `${fusionBatches} リクエスト（1発電所×${getFusionStationChunkDays()}日・日別取得）`;
   const allHint = `全データ一括（本番）: おおよそ ${min}〜${max} 分（FusionSolar は ${fusionUnit}）。`;
   return fusionOnly ? `${allHint}\n${fusionOnly}` : allHint;
 }
@@ -71,7 +71,7 @@ export function formatFusionOnlyTimeHint(rangeStart: string, rangeEnd: string): 
   const chunks = countFusionClientBatches(rangeStart, rangeEnd);
   const min = Math.max(20, Math.round(chunks * 3));
   const max = Math.max(min + 10, Math.round(chunks * 6));
-  return `FusionSolar 個別取得（本番）: ${chunks} リクエスト（8発電所×全期間）でおおよそ ${min}〜${max} 分。進捗が更新されるまでタブを閉じないでください。`;
+  return `FusionSolar 個別取得（本番）: ${chunks} リクエスト（8発電所×${getFusionStationChunkDays()}日区切り）でおおよそ ${min}〜${max} 分。1件あたり数分かかります。タブを閉じないでください。`;
 }
 
 export function fusionChunkStallWarning(
@@ -85,5 +85,5 @@ export function fusionChunkStallWarning(
   const elapsed = nowMs - chunkChangedAtMs;
   if (elapsed < FUSION_CHUNK_STALL_WARN_MS) return null;
   const mins = Math.floor(elapsed / 60_000);
-  return `※ FusionSolar の進捗（${chunkKey}）が ${mins} 分間変わっていません。20分以上停止している場合は「実行取消」を押してください。自動中断も試みます。`;
+  return `※ FusionSolar の進捗（${chunkKey}）が ${mins} 分間変わっていません。45分以上停止している場合は「実行取消」を押してください。`;
 }

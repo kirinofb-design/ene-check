@@ -159,23 +159,19 @@ export default function DataCollectSection() {
     }
   }, [range.startDate, range.endDate]);
 
-  // FusionSolar が22分以上同じチャンクで止まったら fetch を自動中断（一括・個別）
+  // FusionSolar 一括取得のみ: 長時間同じチャンクで止まったら自動中断（個別は手動取消）
   useEffect(() => {
-    const fusionActive =
-      (allLocked && allClientOrchestrationActiveRef.current) || loading === "FusionSolar";
+    const fusionActive = allLocked && allClientOrchestrationActiveRef.current;
     if (!fusionActive) return;
     const timer = setInterval(() => {
       const p = clientAllProgressForUiRef.current;
-      const stepKey =
-        loading === "FusionSolar" ? "fusion-solar" : p?.currentStepKey;
+      const stepKey = p?.currentStepKey;
       if (stepKey !== "fusion-solar") return;
       const { key, changedAt } = fusionChunkProgressRef.current;
       if (!key || changedAt <= 0) return;
       if (Date.now() - changedAt < FUSION_CHUNK_STALL_ABORT_MS) return;
-      const abortRef =
-        loading === "FusionSolar" ? fusionIndivAbortRef : allCollectAbortRef;
-      if (!abortRef.current || abortRef.current.signal.aborted) return;
-      abortRef.current.abort(
+      if (!allCollectAbortRef.current || allCollectAbortRef.current.signal.aborted) return;
+      allCollectAbortRef.current.abort(
         new DOMException("FusionSolar の進捗停止を検知したため自動中断しました。", "AbortError")
       );
     }, 30_000);
@@ -753,7 +749,7 @@ export default function DataCollectSection() {
 
         {loading === "FusionSolar" && fusionIndivProgress ? (
           <p style={{ fontSize: "11px", color: "#0369a1", margin: "0 0 16px", lineHeight: 1.5, whiteSpace: "pre-line" }}>
-            {`FusionSolar 取得中: ${fusionIndivProgress.chunkIndex}/${fusionIndivProgress.chunkTotal} 日目（${fusionIndivProgress.label}）`}
+            {`FusionSolar 取得中: ${fusionIndivProgress.chunkIndex}/${fusionIndivProgress.chunkTotal} 件目（${fusionIndivProgress.label}）`}
             {fusionIndivStallWarning ? `\n${fusionIndivStallWarning}` : ""}
           </p>
         ) : null}
