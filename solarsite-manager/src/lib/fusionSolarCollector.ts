@@ -573,6 +573,38 @@ async function collectFusionDailyRowsForMissingDates(params: {
   return extraRows;
 }
 
+/** Vercel 本番×1発電所: 月別表のページ欠けを避け、日別で1日ずつ取得 */
+function shouldUseDailyOnlyFusionCollection(stationCount: number, daysInRange: number): boolean {
+  return isVercelRuntime() && stationCount === 1 && daysInRange >= 1 && daysInRange <= 31;
+}
+
+async function scrapeFusionSingleDayRow(
+  page: Page,
+  stationName: string,
+  userId: string,
+  ymd: string,
+  dateIdx: number,
+  pcsIdx: number
+): Promise<{ dateStr: string; pcsKwhText: string } | null> {
+  const yearMonth = ymd.slice(0, 7);
+  await setFusionReportPeriod(page, "daily", yearMonth, ymd);
+  await page.keyboard.press("Enter").catch(() => {});
+  await retriggerFusionReportSearch(page, userId, stationName, ymd);
+  const pageRows = await scrapeFusionReportTablePage(page, dateIdx, pcsIdx);
+  for (const r of pageRows) {
+    const norm =
+      normalizeFusionTableDateCell(r.dateStr) ??
+      (() => {
+        const t = r.dateStr.replace(/\//g, "-").trim();
+        return isYmd(t) ? t : null;
+      })();
+    if (norm === ymd && isFusionPcsCellText(r.pcsKwhText)) {
+      return r;
+    }
+  }
+  return null;
+}
+
 async function retriggerFusionReportSearch(page: Page, userId: string, stationName: string, yearMonth: string) {
   const searchBtnCandidates = [
     page.getByRole("button", { name: /検索|Search/i }).first(),
@@ -1198,6 +1230,121 @@ export async function runFusionSolarCollector(
     for (const station of stations) {
       throwIfAllCollectCancelled(userId);
       const stationReportUrl = STATION_REPORT_URL_TEMPLATE.replace("{ne}", station.ne);
+
+      if (shouldUseDailyOnlyFusionCollection(stations.length, rangeYmds.length)) {
+        const remainingStart = wallBudgetMs - (Date.now() - wallStarted);
+        if (remainingStart < 5_000) {
+          return {
+            ok: false,
+            message: `FusionSolarの取得を実行時間の上限のためここまでにしました（保存: ${recordCount}件 / スキップ: ${errorCount}件）。発電所×月の処理が重いため、開始日・終了日の範囲を短く分けて再実行してください。`,
+            recordCount,
+            errorCount,
+          };
+        }
+
+        logger.info("fusionSolarCollector: daily-only mode (skip monthly pagination)", {
+          userId,
+          extra: { station: station.name, ne: station.ne, days: rangeYmds.length },
+        });
+
+        await ensureFusionSessionAndReportReady(
+          page,
+          stationReportUrl,
+          loginId,
+          password,
+          userId,
+          station.name
+        );
+        await page.waitForSelector(".ant-picker-input input", { timeout: REPORT_PAGE_READY_TIMEOUT_MS });
+        await page.waitForTimeout(800);
+        await switchFusionReportGranularity(page, "daily");
+        const { dateIdx, pcsIdx } = await detectFusionReportColumnIndices(page);
+
+        const mappedNameDaily = FUSION_SOLAR_DISPLAY_NAME_MAP[station.name] ?? station.name;
+        const siteDaily = await withPrismaRetry(
+          () =>
+            prisma.site.findFirst({
+              where: { siteName: mappedNameDaily },
+              select: { id: true },
+            }),
+          PRISMA_RETRY_COLLECTOR
+        );
+        if (!siteDaily) {
+          logger.warn("fusionSolarCollector: site not found (daily-only)", {
+            extra: { plantName: station.name, mappedName: mappedNameDaily },
+            userId,
+          });
+          errorCount += rangeYmds.length;
+          continue;
+        }
+
+        for (let di = 0; di < rangeYmds.length; di++) {
+          throwIfAllCollectCancelled(userId);
+          const remaining = wallBudgetMs - (Date.now() - wallStarted);
+          if (remaining < 8_000) {
+            errorCount += rangeYmds.length - di;
+            logger.warn("fusionSolarCollector: daily-only stopped (wall budget)", {
+              userId,
+              extra: { station: station.name, processed: di, total: rangeYmds.length },
+            });
+            break;
+          }
+          const ymd = rangeYmds[di]!;
+          if (di > 0) await page.waitForTimeout(420);
+
+          let row: { dateStr: string; pcsKwhText: string } | null = null;
+          try {
+            row = await scrapeFusionSingleDayRow(page, station.name, userId, ymd, dateIdx, pcsIdx);
+          } catch (e) {
+            logger.warn("fusionSolarCollector: daily-only scrape failed", {
+              userId,
+              extra: {
+                station: station.name,
+                ymd,
+                error: e instanceof Error ? e.message : String(e),
+              },
+            });
+          }
+          if (!row) {
+            errorCount++;
+            continue;
+          }
+          const dateUtc = parseYmdToUtcDate(ymd);
+          if (!dateUtc || dateUtc.getTime() < start.getTime() || dateUtc.getTime() > end.getTime()) {
+            errorCount++;
+            continue;
+          }
+          const generation = parseFloat(row.pcsKwhText.replace(/,/g, ""));
+          if (Number.isNaN(generation)) {
+            errorCount++;
+            continue;
+          }
+          await withPrismaRetry(
+            () =>
+              prisma.dailyGeneration.upsert({
+                where: {
+                  siteId_date: { siteId: siteDaily.id, date: dateUtc },
+                },
+                create: {
+                  siteId: siteDaily.id,
+                  date: dateUtc,
+                  generation,
+                  status: "fusion-solar",
+                },
+                update: {
+                  generation,
+                  status: "fusion-solar",
+                  updatedAt: new Date(),
+                },
+              }),
+            PRISMA_RETRY_COLLECTOR
+          );
+          savedYmdsByStationNe.get(station.ne)?.add(ymd);
+          recordCount++;
+        }
+        await refreshStorageStateFromContext();
+        continue;
+      }
 
       for (const yearMonth of months) {
         throwIfAllCollectCancelled(userId);

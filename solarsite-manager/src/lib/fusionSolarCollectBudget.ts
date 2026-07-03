@@ -4,6 +4,8 @@ function isVercelRuntimeEnv(): boolean {
   return process.env.VERCEL === "1" || process.env.VERCEL === "true";
 }
 
+export { isVercelRuntimeEnv };
+
 /**
  * FusionSolar は発電所×月で重い。Vercel maxDuration（300s）に収めつつ、
  * 長期間リクエストでも過小 budget で途中打ち切りにならないよう段階的に確保する（本番・開発共通）。
