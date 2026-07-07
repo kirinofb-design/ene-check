@@ -130,9 +130,9 @@ async function runCollectorWithRetry(
 
 function canUseFanoutMode(): boolean {
   if (process.env.COLLECT_FANOUT_MODE === "0") return false;
-  if (!getCollectFanoutSecret()) return false;
   // Vercel（本番・Preview）では 1 リクエストに全コレクターを載せるとゲートウェイタイムアウトしやすいためファンアウトを既定で有効化
   if (process.env.VERCEL) return true;
+  if (!getCollectFanoutSecret()) return false;
   if (process.env.NODE_ENV === "production") return true;
   return false;
 }
@@ -249,6 +249,8 @@ export async function POST(request: Request) {
 
       const useFanout = canUseFanoutMode();
       const origin = new URL(request.url).origin;
+      const fanoutSecret = getCollectFanoutSecret();
+      const requestCookie = request.headers.get("cookie") ?? "";
 
       for (const runner of runners) {
         if (isCollectorCancelRequested(userId, "all")) {
@@ -258,12 +260,14 @@ export async function POST(request: Request) {
         markAllCollectStepStarted(userId, runner.key);
         const stepResult = useFanout
           ? await runCollectorWithRetry(runner.key, async () => {
+              const headers: Record<string, string> = {
+                "content-type": "application/json",
+              };
+              if (fanoutSecret) headers.authorization = `Bearer ${fanoutSecret}`;
+              if (requestCookie) headers.cookie = requestCookie;
               const res = await fetch(`${origin}/api/collect/system`, {
                 method: "POST",
-                headers: {
-                  "content-type": "application/json",
-                  authorization: `Bearer ${getCollectFanoutSecret()}`,
-                },
+                headers,
                 body: JSON.stringify({
                   system: runner.key,
                   startDate,

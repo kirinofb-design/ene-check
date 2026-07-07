@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAuth } from "@/lib/auth";
 import { runEcoMeganeCollector } from "@/lib/ecoMeganeCollector";
 import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { runSmaCollector } from "@/lib/smaCollector";
@@ -78,8 +79,18 @@ async function resolveInternalUserId(): Promise<string | null> {
 }
 
 export async function POST(request: Request) {
-  if (!isAuthorizedInternal(request)) {
-    return NextResponse.json({ ok: false, message: "UNAUTHORIZED" }, { status: 401 });
+  const internalAuthorized = isAuthorizedInternal(request);
+  let sessionUserId = "";
+  if (!internalAuthorized) {
+    try {
+      const session = await requireAuth(request);
+      sessionUserId = ((session.user as { id?: string })?.id ?? "").trim();
+    } catch {
+      sessionUserId = "";
+    }
+    if (!sessionUserId) {
+      return NextResponse.json({ ok: false, message: "UNAUTHORIZED" }, { status: 401 });
+    }
   }
 
   const body = (await request.json()) as {
@@ -105,10 +116,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const userByEmail = requestedUserEmail
-    ? await prisma.user.findUnique({ where: { email: requestedUserEmail }, select: { id: true } })
-    : null;
-  const userId = requestedUserId || userByEmail?.id || (await resolveInternalUserId());
+  const userByEmail =
+    internalAuthorized && requestedUserEmail
+      ? await prisma.user.findUnique({ where: { email: requestedUserEmail }, select: { id: true } })
+      : null;
+  const userId = internalAuthorized
+    ? requestedUserId || userByEmail?.id || (await resolveInternalUserId())
+    : sessionUserId;
   if (!userId) {
     return NextResponse.json(
       { ok: false, message: "実行ユーザーを特定できません。", recordCount: 0, errorCount: 0 },
