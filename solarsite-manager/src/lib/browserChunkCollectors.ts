@@ -250,10 +250,22 @@ export async function runFusionSolarDayWindowChunks(params: {
     if (isVercelHostedClient()) {
       const days = diffDaysInclusiveYmd(params.rangeStart, params.rangeEnd);
       if (days <= getFusionVercelShortRangeMaxDays()) {
-        return await runFusionFullRangeStationBatches({
+        const shortRange = await runFusionFullRangeStationBatches({
           rangeStart: params.rangeStart,
           rangeEnd: params.rangeEnd,
           fullRangePostUrl: params.fullRangePostUrl ?? "/api/collect/fusion-solar",
+          signal: params.signal,
+          resolveApiMessage: params.resolveApiMessage,
+          onSetInterrupted: params.onSetInterrupted,
+          onChunkProgress: params.onChunkProgress,
+        });
+        if (shortRange.step.ok || shortRange.flowAborted) return shortRange;
+        // Vercel 短期間 4+4 でブラウザ資源不足が出た場合は、同一実行内で 1発電所分割に退避して取り切る。
+        return await runFusionStationRangeBatches({
+          rangeStart: params.rangeStart,
+          rangeEnd: params.rangeEnd,
+          stationPostUrl: params.stationPostUrl,
+          windowPostUrl: params.windowPostUrl,
           signal: params.signal,
           resolveApiMessage: params.resolveApiMessage,
           onSetInterrupted: params.onSetInterrupted,

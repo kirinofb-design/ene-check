@@ -5,7 +5,7 @@ import { logger } from "@/lib/logger";
 import { isVercelRuntime, launchChromiumForRuntime } from "@/lib/playwrightRuntime";
 import { autoLogin } from "@/lib/autoLogin";
 import { throwIfAllCollectCancelled } from "@/lib/collectCancel";
-import type { Page } from "playwright-core";
+import type { BrowserContext, Page } from "playwright-core";
 import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import {
   capCollectWallBudgetMs,
@@ -79,6 +79,17 @@ function normalizeFusionTableDateCell(raw: string): string | null {
   const d = Number(m[3]);
   if (!y || !mo || !d) return null;
   return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function looksLikeFusionTransientBrowserError(message: string): boolean {
+  const s = message.toLowerCase();
+  return (
+    s.includes("target page, context or browser has been closed") ||
+    s.includes("browsercontext.newpage") ||
+    s.includes("net::err_insufficient_resources") ||
+    s.includes("execution context was destroyed") ||
+    s.includes("browser has been closed")
+  );
 }
 
 /** PCS 列のセル文字列が数値 kWh として解釈できるか（空・ダッシュ類は false） */
@@ -1097,14 +1108,39 @@ export async function runFusionSolarCollector(
       }
     };
 
-    let context = await newContext(Boolean(storageStateJson));
-    let page = await context.newPage();
-    page.setDefaultTimeout(60_000);
-    await context
-      .addInitScript(() => {
-        Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-      })
-      .catch(() => {});
+    const createContextPage = async (preferStorageState: boolean): Promise<{ context: BrowserContext; page: Page }> => {
+      let lastErr: unknown = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const useState = preferStorageState && Boolean(storageStateJson);
+        try {
+          const nextContext = await newContext(useState);
+          const nextPage = await nextContext.newPage();
+          nextPage.setDefaultTimeout(60_000);
+          await nextContext
+            .addInitScript(() => {
+              Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+            })
+            .catch(() => {});
+          return { context: nextContext, page: nextPage };
+        } catch (e) {
+          lastErr = e;
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!looksLikeFusionTransientBrowserError(msg) || attempt === 3) break;
+          logger.warn("fusionSolarCollector: context/page bootstrap retry", {
+            userId,
+            extra: { attempt, message: msg, preferStorageState },
+          });
+          await browser.close().catch(() => {});
+          browser = await launchFusionBrowser(true);
+          await new Promise((r) => setTimeout(r, attempt * 600));
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    };
+
+    const initialCp = await createContextPage(Boolean(storageStateJson));
+    let context = initialCp.context;
+    let page = initialCp.page;
 
     const refreshStorageStateFromContext = async () => {
       try {
@@ -1147,14 +1183,9 @@ export async function runFusionSolarCollector(
           storageStateJson = refresh.storageStateJson;
           usedCachedSession = false;
           await saveMonitoringSession(userId, "fusion-solar", storageStateJson);
-          context = await newContext(true);
-          page = await context.newPage();
-          page.setDefaultTimeout(60_000);
-          await context
-            .addInitScript(() => {
-              Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-            })
-            .catch(() => {});
+          const refreshedCp = await createContextPage(true);
+          context = refreshedCp.context;
+          page = refreshedCp.page;
           return ensureFusionLoggedIn(true);
         }
       }
@@ -1172,14 +1203,9 @@ export async function runFusionSolarCollector(
       });
       await context.close().catch(() => {});
       const useState = preferStorageState && Boolean(storageStateJson);
-      context = await newContext(useState);
-      page = await context.newPage();
-      page.setDefaultTimeout(60_000);
-      await context
-        .addInitScript(() => {
-          Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-        })
-        .catch(() => {});
+      const recreatedCp = await createContextPage(useState);
+      context = recreatedCp.context;
+      page = recreatedCp.page;
       if (!useState) {
         await loginFusionSolar(page, loginId, password, userId);
         await refreshStorageStateFromContext();
