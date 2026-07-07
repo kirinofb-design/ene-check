@@ -573,9 +573,9 @@ async function collectFusionDailyRowsForMissingDates(params: {
   return extraRows;
 }
 
-/** Vercel 本番×1発電所: 月別表のページ欠けを避け、日別で1日ずつ取得 */
-function shouldUseDailyOnlyFusionCollection(stationCount: number, daysInRange: number): boolean {
-  return isVercelRuntime() && stationCount === 1 && daysInRange >= 1 && daysInRange <= 31;
+/** Vercel 本番: 月別表のページ欠けを避け、日別で1日ずつ取得（4+4 バッチでも同様） */
+function shouldUseDailyOnlyFusionCollection(_stationCount: number, daysInRange: number): boolean {
+  return isVercelRuntime() && daysInRange >= 1 && daysInRange <= 14;
 }
 
 async function scrapeFusionSingleDayRow(

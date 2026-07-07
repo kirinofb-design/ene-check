@@ -5,6 +5,7 @@ import {
   getFusionFullRangeBatchSize,
   getFusionStationChunkDays,
   getFusionStationChunkDelayMs,
+  getFusionVercelShortRangeMaxDays,
   getFusionWindowMaxAttempts,
   isVercelHostedClient,
   shouldPrewarmBetweenCollectorsClient,
@@ -244,9 +245,21 @@ export async function runFusionSolarDayWindowChunks(params: {
     };
   }
 
-  // localhost: 期間一括（8→失敗時4+4）。Vercel: 1発電所×14日チャンク（300s内で完全取得）
+  // localhost: 期間一括（8→失敗時4+4）。Vercel 短期間: 同じ4+4＋日別。長期間: 1発電所×14日
   if (!params.splitByStation) {
     if (isVercelHostedClient()) {
+      const days = diffDaysInclusiveYmd(params.rangeStart, params.rangeEnd);
+      if (days <= getFusionVercelShortRangeMaxDays()) {
+        return await runFusionFullRangeStationBatches({
+          rangeStart: params.rangeStart,
+          rangeEnd: params.rangeEnd,
+          fullRangePostUrl: params.fullRangePostUrl ?? "/api/collect/fusion-solar",
+          signal: params.signal,
+          resolveApiMessage: params.resolveApiMessage,
+          onSetInterrupted: params.onSetInterrupted,
+          onChunkProgress: params.onChunkProgress,
+        });
+      }
       return await runFusionStationRangeBatches({
         rangeStart: params.rangeStart,
         rangeEnd: params.rangeEnd,

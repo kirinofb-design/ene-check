@@ -2,7 +2,7 @@ import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 /**
  * ブラウザ側の収集オーケストレーション用（クライアントのみ）。
- * Vercel 本番は関数 maxDuration=300s のため Fusion を日次 window API に分割する。
+ * Vercel 本番は関数 maxDuration=300s。短期間は 4+4 期間一括、長期間は 1発電所×14日に分割。
  */
 
 /** localhost / 127.0.0.1 で開発サーバーを開いているか */
@@ -57,19 +57,27 @@ export function getLocalFusionStationBatchSize(): number {
   return getFusionFullRangeBatchSize();
 }
 
-/** 1発電所あたりの期間チャンク日数（本番は14日×日別モードで300s内に収める） */
+/**
+ * 本番で 4+4 期間一括（開発と同経路）にする最大日数。
+ * この日数以内なら 4発電所×日別で 300s 内に収まる想定。
+ */
+export function getFusionVercelShortRangeMaxDays(): number {
+  return 14;
+}
+
+/** 1発電所あたりの期間チャンク日数（本番・長期間のみ14日×日別モード） */
 export function getFusionStationChunkDays(): number {
   return isVercelHostedClient() ? 14 : 31;
 }
 
 /** 本番: 発電所×期間チャンク間の待機（ms） */
 export function getFusionStationChunkDelayMs(): number {
-  return isVercelHostedClient() ? 500 : 0;
+  return isVercelHostedClient() ? 300 : 0;
 }
 
-/** localhost: Fusion バッチ間の待機（ms） */
+/** Fusion 4+4 バッチ間の待機（ms） */
 export function getLocalFusionBatchDelayMs(): number {
-  return isVercelHostedClient() ? 2000 : 0;
+  return isVercelHostedClient() ? 1000 : 0;
 }
 
 /** localhost ではコレクター間 prewarm を省略（Chromium 起動待ちを削減） */
@@ -92,8 +100,9 @@ export function getLaplaceDaysPerChunk(): number {
   return 31;
 }
 
+/** SMA はラプラス同様、本番も期間一括（300s 内に収まる日数なら 1 リクエスト） */
 export function getSmaDaysPerChunk(): number {
-  return isVercelHostedClient() ? 1 : 31;
+  return 31;
 }
 
 export function getLaplaceChunkDelayMs(): number {
@@ -101,7 +110,7 @@ export function getLaplaceChunkDelayMs(): number {
 }
 
 export function getSmaChunkDelayMs(): number {
-  return isVercelHostedClient() ? 4500 : 0;
+  return isVercelHostedClient() ? 1500 : 0;
 }
 
 export function getOrchestrationChillMs(): {
@@ -113,11 +122,11 @@ export function getOrchestrationChillMs(): {
 } {
   if (isVercelHostedClient()) {
     return {
-      afterEco: 2800,
-      afterSma: 5500,
-      afterLaplace: 4500,
-      beforeFusion: 3200,
-      betweenMonitors: 2000,
+      afterEco: 1500,
+      afterSma: 2000,
+      afterLaplace: 2500,
+      beforeFusion: 1500,
+      betweenMonitors: 1000,
     };
   }
   return {
