@@ -222,6 +222,8 @@ export async function runClientFullCollectOrchestration(params: {
   if (!interrupted && !signal.aborted) {
     await chill(chillMs.beforeFusion);
     await prewarmCollectChromium(signal);
+    await chill(2000);
+    await prewarmCollectChromium(signal);
   }
   if (!interrupted && !signal.aborted) {
     notify(5, "fusion-solar");

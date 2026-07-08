@@ -211,6 +211,15 @@ function pickDateAndGenerationFromRow(cells: SmaTableCellRow): { dateUtc: Date |
   return { dateUtc, generation };
 }
 
+function ymdFromUtcDate(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+function countExpectedDaysInRange(start: Date, end: Date): number {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  return Math.floor((end.getTime() - start.getTime()) / msPerDay) + 1;
+}
+
 function countRowsInRange(rows: SmaTableCellRow[], start: Date, end: Date): number {
   let count = 0;
   for (const cells of rows) {
@@ -220,6 +229,43 @@ function countRowsInRange(rows: SmaTableCellRow[], start: Date, end: Date): numb
     if (t >= start.getTime() && t <= end.getTime()) count++;
   }
   return count;
+}
+
+/** 複数ソースの行を日付でマージ（同一日は大きい kWh を優先） */
+function mergeSmaRowsByDate(rowsList: SmaTableCellRow[]): SmaTableCellRow[] {
+  const map = new Map<string, SmaTableCellRow>();
+  for (const cells of rowsList) {
+    const parsed = pickDateAndGenerationFromRow(cells);
+    if (!parsed.dateUtc || parsed.generation === null) continue;
+    const key = ymdFromUtcDate(parsed.dateUtc);
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, cells);
+      continue;
+    }
+    const prevGen = pickDateAndGenerationFromRow(prev).generation ?? -1;
+    if (parsed.generation > prevGen) map.set(key, cells);
+  }
+  return [...map.values()];
+}
+
+function listMissingSmaYmdsInRange(rows: SmaTableCellRow[], start: Date, end: Date): string[] {
+  const collected = new Set<string>();
+  for (const cells of rows) {
+    const parsed = pickDateAndGenerationFromRow(cells);
+    if (!parsed.dateUtc || parsed.generation === null) continue;
+    const t = parsed.dateUtc.getTime();
+    if (t < start.getTime() || t > end.getTime()) continue;
+    collected.add(ymdFromUtcDate(parsed.dateUtc));
+  }
+  const missing: string[] = [];
+  const cur = new Date(start);
+  while (cur.getTime() <= end.getTime()) {
+    const key = ymdFromUtcDate(cur);
+    if (!collected.has(key)) missing.push(key);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return missing;
 }
 
 function getRowsDateRange(rows: SmaTableCellRow[]): { min: Date | null; max: Date | null } {
@@ -1030,10 +1076,10 @@ async function extractRowsFromHighchartsFromContext(context: any): Promise<SmaTa
             if (categoryText && categoryText.trim().length > 0) {
               dateText = categoryText.trim();
             } else if (typeof xRaw === "number" && Number.isFinite(xRaw)) {
-              // UTC日付に正規化して既存 parser と整合させる
+              // emulateTimezone(Asia/Tokyo) 下ではローカル日付を使う（UTC slice だと最終日が1日ずれる）
               const dt = new Date(xRaw);
               if (Number.isFinite(dt.getTime())) {
-                dateText = dt.toISOString().slice(0, 10);
+                dateText = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
               }
             } else if (typeof xRaw === "string" && xRaw.trim().length > 0) {
               dateText = xRaw.trim();
@@ -1729,54 +1775,41 @@ export async function runSmaCollectorCookie(
 
       let finalRows: SmaTableCellRow[] = [];
       let finalSource = "none";
-      let bestRows: SmaTableCellRow[] = [];
-      let bestSource = "none";
-      let bestInRange = 0;
-      const adoptCandidate = (rows: SmaTableCellRow[], source: string) => {
+      const expectedDaysInRange = countExpectedDaysInRange(start, end);
+      const sourceRows: SmaTableCellRow[] = [];
+      const noteSource = (label: string, rows: SmaTableCellRow[]) => {
         if (rows.length === 0) return;
-        const inRange = countRowsInRange(rows, start, end);
-        const shouldAdopt =
-          inRange > bestInRange || (inRange === bestInRange && rows.length > bestRows.length);
-        if (shouldAdopt) {
-          bestRows = rows;
-          bestSource = source;
-          bestInRange = inRange;
-        }
+        sourceRows.push(...rows);
+        logger.info("smaCollector: extracted source rows", {
+          userId,
+          extra: {
+            plantName,
+            plantOid,
+            source: label,
+            rowCount: rows.length,
+            rowCountInRange: countRowsInRange(rows, start, end),
+          },
+        });
       };
 
-      const tableRows = await extractTableRows(page);
-      adoptCandidate(tableRows, "table");
+      noteSource("table", await extractTableRows(page));
+      noteSource("highcharts", await extractRowsFromHighcharts(page));
+      noteSource("imagemap", await extractRowsFromImageMap(page));
 
-      const chartRows = await extractRowsFromHighcharts(page);
-      if (chartRows.length > 0) {
-        adoptCandidate(chartRows, "highcharts");
-        logger.info("smaCollector: using highcharts extracted rows", {
-          userId,
-          extra: { plantName, plantOid, rowCount: chartRows.length },
-        });
-      }
+      let mergedRows = mergeSmaRowsByDate(sourceRows);
+      let bestInRange = countRowsInRange(mergedRows, start, end);
 
-      const imageMapRows = await extractRowsFromImageMap(page);
-      if (imageMapRows.length > 0) {
-        adoptCandidate(imageMapRows, "imagemap");
-        logger.info("smaCollector: using image map extracted rows", {
-          userId,
-          extra: { plantName, plantOid, rowCount: imageMapRows.length },
-        });
-      }
-
-      if (bestInRange === 0) {
+      if (bestInRange < expectedDaysInRange) {
         // 表示期間が当月固定で対象月に合っていない場合、前期間へ移動して再抽出する
-        for (let i = 0; i < 4 && bestInRange === 0; i++) {
+        for (let i = 0; i < 4 && bestInRange < expectedDaysInRange; i++) {
           const moved = await tryGoPreviousPeriod(page);
           if (!moved) break;
-          const movedTableRows = await extractTableRows(page);
-          adoptCandidate(movedTableRows, `table_prev_${i + 1}`);
-          const movedChartRows = await extractRowsFromHighcharts(page);
-          adoptCandidate(movedChartRows, `highcharts_prev_${i + 1}`);
-          const movedImageMapRows = await extractRowsFromImageMap(page);
-          adoptCandidate(movedImageMapRows, `imagemap_prev_${i + 1}`);
-          const range = getRowsDateRange(bestRows);
+          noteSource(`table_prev_${i + 1}`, await extractTableRows(page));
+          noteSource(`highcharts_prev_${i + 1}`, await extractRowsFromHighcharts(page));
+          noteSource(`imagemap_prev_${i + 1}`, await extractRowsFromImageMap(page));
+          mergedRows = mergeSmaRowsByDate(sourceRows);
+          bestInRange = countRowsInRange(mergedRows, start, end);
+          const range = getRowsDateRange(mergedRows);
           logger.info("smaCollector: previous period retry", {
             userId,
             extra: {
@@ -1784,51 +1817,68 @@ export async function runSmaCollectorCookie(
               plantOid,
               step: i + 1,
               rowCountInRange: bestInRange,
-              bestSource,
-              bestMinDate: range.min ? range.min.toISOString().slice(0, 10) : null,
-              bestMaxDate: range.max ? range.max.toISOString().slice(0, 10) : null,
+              expectedDaysInRange,
+              bestMinDate: range.min ? ymdFromUtcDate(range.min) : null,
+              bestMaxDate: range.max ? ymdFromUtcDate(range.max) : null,
             },
           });
         }
       }
 
-      // 既に指定期間の行が取れている場合は、画面遷移を誘発しやすいCSV操作をスキップして安定性を優先
-      if (bestInRange === 0) {
+      // 一部日だけ欠ける（例: 月次チャートの最終日）場合も CSV で補完する
+      if (bestInRange < expectedDaysInRange) {
         const csvRows = await tryDownloadCsvRows(page, userId, plantOid);
         if (csvRows.length > 0) {
-          adoptCandidate(csvRows, "csv");
+          noteSource("csv", csvRows);
+          mergedRows = mergeSmaRowsByDate(sourceRows);
+          bestInRange = countRowsInRange(mergedRows, start, end);
           await saveTraceSnapshot(page, userId, `energy_csv_download_${plantOid}`);
         }
       }
 
-      if (bestInRange === 0) {
+      if (bestInRange < expectedDaysInRange) {
         const movedToDailyReport = await gotoDailyReportIfPossible(page);
         if (movedToDailyReport) {
           await saveTraceSnapshot(page, userId, `daily_report_${plantOid}`);
           await trySwitchToMonthView(page);
           await tryOpenChartGear(page);
           await saveTraceSnapshot(page, userId, `daily_report_month_try_${plantOid}`);
-          const dailyTableRows = await extractTableRows(page);
-          adoptCandidate(dailyTableRows, "daily_report_table");
-          const dailyChartRows = await extractRowsFromHighcharts(page);
-          adoptCandidate(dailyChartRows, "daily_report_highcharts");
-          const dailyCsvRows = await tryDownloadCsvRows(page, userId, plantOid);
-          adoptCandidate(dailyCsvRows, "daily_report_csv");
+          noteSource("daily_report_table", await extractTableRows(page));
+          noteSource("daily_report_highcharts", await extractRowsFromHighcharts(page));
+          noteSource("daily_report_csv", await tryDownloadCsvRows(page, userId, plantOid));
+          mergedRows = mergeSmaRowsByDate(sourceRows);
+          bestInRange = countRowsInRange(mergedRows, start, end);
           logger.info("smaCollector: daily report fallback rows", {
             userId,
             extra: {
               plantName,
               plantOid,
               movedToDailyReport,
-              rowCount: bestRows.length,
+              rowCount: mergedRows.length,
+              rowCountInRange: bestInRange,
               url: page.url(),
               title: await page.title().catch(() => ""),
             },
           });
         }
       }
-      finalRows = bestRows;
-      finalSource = bestSource;
+
+      const missingYmds = listMissingSmaYmdsInRange(mergedRows, start, end);
+      if (missingYmds.length > 0) {
+        logger.warn("smaCollector: incomplete range after all sources", {
+          userId,
+          extra: {
+            plantName,
+            plantOid,
+            expectedDaysInRange,
+            rowCountInRange: bestInRange,
+            missingYmds,
+          },
+        });
+      }
+
+      finalRows = mergedRows;
+      finalSource = "merged";
       const parsePreview = finalRows.slice(0, 6).map((cells) => {
         const parsed = pickDateAndGenerationFromRow(cells);
         return {

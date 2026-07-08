@@ -72,7 +72,7 @@ export function getFusionStationChunkDays(): number {
 
 /** 本番: 発電所×期間チャンク間の待機（ms） */
 export function getFusionStationChunkDelayMs(): number {
-  return isVercelHostedClient() ? 300 : 0;
+  return isVercelHostedClient() ? 1200 : 0;
 }
 
 /** Fusion 4+4 バッチ間の待機（ms） */
@@ -125,7 +125,7 @@ export function getOrchestrationChillMs(): {
       afterEco: 1500,
       afterSma: 2000,
       afterLaplace: 2500,
-      beforeFusion: 1500,
+      beforeFusion: 6000,
       betweenMonitors: 1000,
     };
   }

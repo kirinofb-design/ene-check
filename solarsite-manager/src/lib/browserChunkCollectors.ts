@@ -5,7 +5,6 @@ import {
   getFusionFullRangeBatchSize,
   getFusionStationChunkDays,
   getFusionStationChunkDelayMs,
-  getFusionVercelShortRangeMaxDays,
   getFusionWindowMaxAttempts,
   isVercelHostedClient,
   shouldPrewarmBetweenCollectorsClient,
@@ -245,33 +244,9 @@ export async function runFusionSolarDayWindowChunks(params: {
     };
   }
 
-  // localhost: 期間一括（8→失敗時4+4）。Vercel 短期間: 同じ4+4＋日別。長期間: 1発電所×14日
+  // localhost: 期間一括（8→失敗時4+4）。Vercel: 1発電所×期間（4+4は本番で資源不足になりやすい）
   if (!params.splitByStation) {
     if (isVercelHostedClient()) {
-      const days = diffDaysInclusiveYmd(params.rangeStart, params.rangeEnd);
-      if (days <= getFusionVercelShortRangeMaxDays()) {
-        const shortRange = await runFusionFullRangeStationBatches({
-          rangeStart: params.rangeStart,
-          rangeEnd: params.rangeEnd,
-          fullRangePostUrl: params.fullRangePostUrl ?? "/api/collect/fusion-solar",
-          signal: params.signal,
-          resolveApiMessage: params.resolveApiMessage,
-          onSetInterrupted: params.onSetInterrupted,
-          onChunkProgress: params.onChunkProgress,
-        });
-        if (shortRange.step.ok || shortRange.flowAborted) return shortRange;
-        // Vercel 短期間 4+4 でブラウザ資源不足が出た場合は、同一実行内で 1発電所分割に退避して取り切る。
-        return await runFusionStationRangeBatches({
-          rangeStart: params.rangeStart,
-          rangeEnd: params.rangeEnd,
-          stationPostUrl: params.stationPostUrl,
-          windowPostUrl: params.windowPostUrl,
-          signal: params.signal,
-          resolveApiMessage: params.resolveApiMessage,
-          onSetInterrupted: params.onSetInterrupted,
-          onChunkProgress: params.onChunkProgress,
-        });
-      }
       return await runFusionStationRangeBatches({
         rangeStart: params.rangeStart,
         rangeEnd: params.rangeEnd,

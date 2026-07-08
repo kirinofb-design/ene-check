@@ -1020,12 +1020,13 @@ export async function runFusionSolarCollector(
   const launchFusionBrowser = async (stableMode = false) =>
     launchChromiumForRuntime({
       headless: true,
-      extraArgs: stableMode
-        ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-        : ["--disable-blink-features=AutomationControlled"],
+      extraArgs:
+        stableMode || isVercelRuntime()
+          ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+          : ["--disable-blink-features=AutomationControlled"],
     });
 
-  let browser = await launchFusionBrowser();
+  let browser = await launchFusionBrowser(isVercelRuntime());
 
   let recordCount = 0;
   let errorCount = 0;
@@ -1816,5 +1817,8 @@ export async function runFusionSolarCollector(
     };
   } finally {
     await browser.close().catch(() => {});
+    if (isVercelRuntime()) {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   }
 }
