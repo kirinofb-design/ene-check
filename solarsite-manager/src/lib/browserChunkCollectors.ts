@@ -13,6 +13,13 @@ import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 import { eachMaxDaySliceInRange } from "@/lib/collectDateChunks";
 import { computeFusionExpectedMinRecords, diffDaysInclusiveYmd } from "@/lib/fusionSolarCollectBudget";
 
+const COLLECT_PREWARM_URL = "/api/collect/prewarm";
+
+async function prewarmFusionChunkChromium(signal: AbortSignal): Promise<void> {
+  if (!isVercelHostedClient() || !shouldPrewarmBetweenCollectorsClient()) return;
+  await fetch(COLLECT_PREWARM_URL, { method: "POST", signal }).catch(() => {});
+}
+
 function collectFetchSignal(userSignal: AbortSignal): AbortSignal {
   const timeoutMs = getCollectChunkFetchTimeoutMs();
   if (!timeoutMs) return userSignal;
@@ -315,6 +322,8 @@ async function runFusionStationRangeBatches(params: {
   let totalErr = 0;
   const failures: string[] = [];
 
+  await prewarmFusionChunkChromium(params.signal);
+
   const runStationSliceOnce = async (
     station: (typeof FUSION_SOLAR_STATIONS)[number],
     sl: DateSlice
@@ -530,6 +539,7 @@ async function runFusionStationRangeBatches(params: {
   ): Promise<SliceCollectOutcome> => {
     if (bumpProgress) {
       if (chunkIdx > 0 && chunkDelayMs > 0) {
+        await prewarmFusionChunkChromium(params.signal);
         await new Promise((r) => setTimeout(r, chunkDelayMs));
       }
       chunkIdx++;

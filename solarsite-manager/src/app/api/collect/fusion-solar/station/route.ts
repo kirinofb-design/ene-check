@@ -6,6 +6,7 @@ import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock"
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
 import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
 import { isKnownFusionStationNe } from "@/lib/fusionSolarStations";
+import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 
 /** 1 発電所 × 指定期間（ブラウザからの分割取得用） */
 export const maxDuration = 300;
@@ -73,6 +74,7 @@ export async function POST(request: Request) {
     const wallBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
     let result;
     try {
+      await prewarmVercelChromiumExecutable();
       result = await runFusionSolarCollector(userId, startDate, endDate, {
         stationNeAllowList: [stationNe],
         wallBudgetMs,
