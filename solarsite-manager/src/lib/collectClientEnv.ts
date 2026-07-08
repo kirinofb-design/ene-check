@@ -21,6 +21,11 @@ export function isVercelHostedClient(): boolean {
   return process.env.NEXT_PUBLIC_VERCEL === "1";
 }
 
+/** Vercel 本番: 他コレクターより先に Fusion を実行（Chromium 資源を確保） */
+export function shouldRunFusionFirstOnVercelClient(): boolean {
+  return isVercelHostedClient();
+}
+
 /**
  * FusionSolar を日次 window に分割するか。
  * 既定は false（開発と同じ期間一括・4+4）。`NEXT_PUBLIC_FUSION_DAY_WINDOW=1` で旧日次モード。
@@ -70,9 +75,9 @@ export function getFusionStationChunkDays(): number {
   return isVercelHostedClient() ? 14 : 31;
 }
 
-/** 本番: 発電所×期間チャンク間の待機（ms） */
+/** 本番: 発電所×日チャンク間の待機（ms） */
 export function getFusionStationChunkDelayMs(): number {
-  return isVercelHostedClient() ? 3500 : 0;
+  return isVercelHostedClient() ? 2500 : 0;
 }
 
 /** Fusion 4+4 バッチ間の待機（ms） */

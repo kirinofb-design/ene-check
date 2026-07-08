@@ -13,6 +13,7 @@ import {
   getSmaChunkDelayMs,
   getSmaDaysPerChunk,
   shouldPrewarmBetweenCollectorsClient,
+  shouldRunFusionFirstOnVercelClient,
   shouldSplitFusionByStationClient,
 } from "@/lib/collectClientEnv";
 
@@ -155,78 +156,10 @@ export async function runClientFullCollectOrchestration(params: {
     }
   };
 
-  if (signal.aborted) interrupted = true;
-  if (!interrupted && !signal.aborted) {
-    notify(0, "eco-megane");
-    await fetchOneSystemStep({ key: "eco-megane", button: "eco-megane" });
-  }
-  if (!interrupted && !signal.aborted) {
-    await chill(chillMs.afterEco);
-    await prewarmCollectChromium(signal);
-  }
-  if (!interrupted && !signal.aborted) {
-    notify(1, "sma");
-    const sma = await runSmaDayChunks({
-      rangeStart: range.startDate,
-      rangeEnd: range.endDate,
-      signal,
-      smaPostUrl: endpointBySystem.SMA,
-      resolveApiMessage,
-      onSetInterrupted: (v) => {
-        interrupted = v;
-      },
-      maxDaysPerChunk: getSmaDaysPerChunk(),
-      betweenChunksMs: getSmaChunkDelayMs(),
-      onChunkProgress: (p) => notify(1, "sma", `SMA ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
-    });
-    steps.push(sma.step);
-    if (sma.flowAborted) interrupted = true;
-  }
-  if (!interrupted && !signal.aborted) {
-    await chill(chillMs.afterSma);
-    await prewarmCollectChromium(signal);
-  }
-  if (!interrupted && !signal.aborted) {
-    notify(2, "laplace");
-    const lap = await runLaplaceDayChunks({
-      rangeStart: range.startDate,
-      rangeEnd: range.endDate,
-      signal,
-      laplacePostUrl: endpointBySystem.ラプラス,
-      prewarmPostUrl: COLLECT_PREWARM_URL,
-      maxDaysPerChunk: getLaplaceDaysPerChunk(),
-      betweenChunksMs: getLaplaceChunkDelayMs(),
-      resolveApiMessage,
-      onSetInterrupted: (v) => {
-        interrupted = v;
-      },
-      onChunkProgress: (p) => notify(2, "laplace", `ラプラス ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
-    });
-    steps.push(lap.step);
-    if (lap.flowAborted) interrupted = true;
-  }
-  if (!interrupted && !signal.aborted) {
-    await chill(chillMs.afterLaplace);
-  }
-  if (!interrupted && !signal.aborted) {
-    notify(3, "solar-monitor-sf");
-    await fetchOneSystemStep({ key: "solar-monitor-sf", button: "池新田・本社" });
-  }
-  if (!interrupted && !signal.aborted) {
-    await chill(chillMs.betweenMonitors);
-  }
-  if (!interrupted && !signal.aborted) {
-    notify(4, "solar-monitor-se");
-    await fetchOneSystemStep({ key: "solar-monitor-se", button: "須山" });
-  }
-  if (!interrupted && !signal.aborted) {
-    await chill(chillMs.beforeFusion);
-    await prewarmCollectChromium(signal);
-    await chill(2000);
-    await prewarmCollectChromium(signal);
-  }
-  if (!interrupted && !signal.aborted) {
-    notify(5, "fusion-solar");
+  const fusionFirst = shouldRunFusionFirstOnVercelClient();
+
+  const runFusionStep = async (notifyIndex: number) => {
+    notify(notifyIndex, "fusion-solar");
     const fus = await runFusionSolarDayWindowChunks({
       rangeStart: range.startDate,
       rangeEnd: range.endDate,
@@ -240,10 +173,93 @@ export async function runClientFullCollectOrchestration(params: {
         interrupted = v;
       },
       onChunkProgress: (p) =>
-        notify(5, "fusion-solar", `FusionSolar ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
+        notify(notifyIndex, "fusion-solar", `FusionSolar ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
     });
     steps.push(fus.step);
     if (fus.flowAborted) interrupted = true;
+  };
+
+  if (signal.aborted) interrupted = true;
+
+  if (fusionFirst && !interrupted && !signal.aborted) {
+    await prewarmCollectChromium(signal);
+    await runFusionStep(0);
+    if (!interrupted && !signal.aborted) {
+      await chill(10_000);
+      await prewarmCollectChromium(signal);
+    }
+  }
+
+  let stepIdx = fusionFirst ? 1 : 0;
+  if (!interrupted && !signal.aborted) {
+    notify(stepIdx, "eco-megane");
+    await fetchOneSystemStep({ key: "eco-megane", button: "eco-megane" });
+  }
+  if (!interrupted && !signal.aborted) {
+    await chill(chillMs.afterEco);
+    await prewarmCollectChromium(signal);
+  }
+  if (!interrupted && !signal.aborted) {
+    notify(stepIdx + 1, "sma");
+    const sma = await runSmaDayChunks({
+      rangeStart: range.startDate,
+      rangeEnd: range.endDate,
+      signal,
+      smaPostUrl: endpointBySystem.SMA,
+      resolveApiMessage,
+      onSetInterrupted: (v) => {
+        interrupted = v;
+      },
+      maxDaysPerChunk: getSmaDaysPerChunk(),
+      betweenChunksMs: getSmaChunkDelayMs(),
+      onChunkProgress: (p) => notify(stepIdx + 1, "sma", `SMA ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
+    });
+    steps.push(sma.step);
+    if (sma.flowAborted) interrupted = true;
+  }
+  if (!interrupted && !signal.aborted) {
+    await chill(chillMs.afterSma);
+    await prewarmCollectChromium(signal);
+  }
+  if (!interrupted && !signal.aborted) {
+    notify(stepIdx + 2, "laplace");
+    const lap = await runLaplaceDayChunks({
+      rangeStart: range.startDate,
+      rangeEnd: range.endDate,
+      signal,
+      laplacePostUrl: endpointBySystem.ラプラス,
+      prewarmPostUrl: COLLECT_PREWARM_URL,
+      maxDaysPerChunk: getLaplaceDaysPerChunk(),
+      betweenChunksMs: getLaplaceChunkDelayMs(),
+      resolveApiMessage,
+      onSetInterrupted: (v) => {
+        interrupted = v;
+      },
+      onChunkProgress: (p) => notify(stepIdx + 2, "laplace", `ラプラス ${p.chunkIndex}/${p.chunkTotal}（${p.label}）`),
+    });
+    steps.push(lap.step);
+    if (lap.flowAborted) interrupted = true;
+  }
+  if (!interrupted && !signal.aborted) {
+    await chill(chillMs.afterLaplace);
+  }
+  if (!interrupted && !signal.aborted) {
+    notify(stepIdx + 3, "solar-monitor-sf");
+    await fetchOneSystemStep({ key: "solar-monitor-sf", button: "池新田・本社" });
+  }
+  if (!interrupted && !signal.aborted) {
+    await chill(chillMs.betweenMonitors);
+  }
+  if (!interrupted && !signal.aborted) {
+    notify(stepIdx + 4, "solar-monitor-se");
+    await fetchOneSystemStep({ key: "solar-monitor-se", button: "須山" });
+  }
+  if (!fusionFirst && !interrupted && !signal.aborted) {
+    await chill(chillMs.beforeFusion);
+    await prewarmCollectChromium(signal);
+    await chill(2000);
+    await prewarmCollectChromium(signal);
+    await runFusionStep(stepIdx + 5);
   }
 
   let mirrorAppend = "";

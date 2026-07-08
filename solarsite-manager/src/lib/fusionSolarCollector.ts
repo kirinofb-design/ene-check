@@ -1067,6 +1067,9 @@ export async function runFusionSolarCollector(
     let loginResult: Awaited<ReturnType<typeof autoLogin>>;
     if (storageStateJson) {
       loginResult = { systemId: "fusion-solar", ok: true, storageStateJson, message: "cached session" };
+    } else if (isVercelRuntime()) {
+      // Vercel: autoLogin は別 Chromium を起動するため資源不足になりやすい。同一ブラウザで手動ログインする。
+      loginResult = { systemId: "fusion-solar", ok: false, message: "vercel manual login in collector" };
     } else {
       loginResult = await runTimedAutoLogin();
     }
@@ -1224,9 +1227,8 @@ export async function runFusionSolarCollector(
       savedYmdsByStationNe.set(s.ne, new Set());
     }
 
-    // ログイン直後は最初の report 遷移が不安定なことがあるため、
-    // 末尾（既存データが多い＝比較的安定）発電所で1回セッションを温めてから本処理へ入る
-    if (stations.length > 1) {
+    // ログイン直後の warmup（Vercel では page.goto 負荷を増やすため省略）
+    if (stations.length > 1 && !isVercelRuntime()) {
       const warmupStation = stations[stations.length - 1];
       const warmupReportUrl = STATION_REPORT_URL_TEMPLATE.replace("{ne}", warmupStation.ne);
       try {
