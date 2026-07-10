@@ -4,7 +4,7 @@ import { handleApiError } from "@/lib/apiError";
 import { runFusionSolarCollector } from "@/lib/fusionSolarCollector";
 import { acquireCollectorLock, releaseCollectorLock } from "@/lib/collectorLock";
 import { ensureDbReachable } from "@/lib/ensureDbReachable";
-import { getFusionSolarWallBudgetMs } from "@/lib/fusionSolarCollectBudget";
+import { getFusionSolarWallBudgetMs, computeFusionExpectedMinRecords } from "@/lib/fusionSolarCollectBudget";
 import { isKnownFusionStationNe } from "@/lib/fusionSolarStations";
 import { prewarmVercelChromiumExecutable } from "@/lib/playwrightRuntime";
 
@@ -72,12 +72,14 @@ export async function POST(request: Request) {
     }
 
     const wallBudgetMs = getFusionSolarWallBudgetMs(startDate, endDate);
+    const expectedMinRecords = computeFusionExpectedMinRecords(startDate, endDate, 1);
     let result;
     try {
       await prewarmVercelChromiumExecutable();
       result = await runFusionSolarCollector(userId, startDate, endDate, {
         stationNeAllowList: [stationNe],
         wallBudgetMs,
+        expectedMinRecords,
       });
     } finally {
       releaseCollectorLock(userId, "fusion-solar");

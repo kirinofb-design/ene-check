@@ -1022,7 +1022,13 @@ export async function runFusionSolarCollector(
       headless: true,
       extraArgs:
         stableMode || isVercelRuntime()
-          ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+          ? [
+              "--no-sandbox",
+              "--disable-dev-shm-usage",
+              "--disable-gpu",
+              "--single-process",
+              "--disable-blink-features=AutomationControlled",
+            ]
           : ["--disable-blink-features=AutomationControlled"],
     });
 
@@ -1820,7 +1826,7 @@ export async function runFusionSolarCollector(
   } finally {
     await browser.close().catch(() => {});
     if (isVercelRuntime()) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, 4000));
     }
   }
 }

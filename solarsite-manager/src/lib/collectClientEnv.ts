@@ -2,7 +2,7 @@ import { FUSION_SOLAR_STATIONS } from "@/lib/fusionSolarStations";
 
 /**
  * ブラウザ側の収集オーケストレーション用（クライアントのみ）。
- * Vercel 本番は関数 maxDuration=300s。短期間は 4+4 期間一括、長期間は 1発電所×14日に分割。
+ * Vercel 本番は関数 maxDuration=300s。Fusion は 1発電所×期間（最大14日）に分割する。
  */
 
 /** localhost / 127.0.0.1 で開発サーバーを開いているか */
@@ -21,9 +21,12 @@ export function isVercelHostedClient(): boolean {
   return process.env.NEXT_PUBLIC_VERCEL === "1";
 }
 
-/** Vercel 本番: 他コレクターより先に Fusion を実行（Chromium 資源を確保） */
+/**
+ * Vercel で Fusion を他コレクターより先に実行するか。
+ * 既定は false（他システムを先に保存し、Fusion 失敗でも Excel に他データが残るようにする）。
+ */
 export function shouldRunFusionFirstOnVercelClient(): boolean {
-  return isVercelHostedClient();
+  return false;
 }
 
 /**
@@ -75,9 +78,9 @@ export function getFusionStationChunkDays(): number {
   return isVercelHostedClient() ? 14 : 31;
 }
 
-/** 本番: 発電所×日チャンク間の待機（ms） */
+/** 本番: 発電所チャンク間の待機（ms）。/tmp とメモリ回復のため長めに空ける */
 export function getFusionStationChunkDelayMs(): number {
-  return isVercelHostedClient() ? 2500 : 0;
+  return isVercelHostedClient() ? 10_000 : 0;
 }
 
 /** Fusion 4+4 バッチ間の待機（ms） */
@@ -95,9 +98,9 @@ export function getCollectChunkFetchTimeoutMs(): number | undefined {
   return isVercelHostedClient() ? 295_000 : undefined;
 }
 
-/** Vercel 本番: Fusion window API の最大再試行（5回×295s だと1日で25分超えフリーズしやすい） */
+/** Vercel 本番: Fusion station API の最大再試行（資源不足時の回復待ちを含める） */
 export function getFusionWindowMaxAttempts(): number {
-  return isVercelHostedClient() ? 2 : 5;
+  return isVercelHostedClient() ? 3 : 5;
 }
 
 export function getLaplaceDaysPerChunk(): number {
@@ -130,7 +133,7 @@ export function getOrchestrationChillMs(): {
       afterEco: 1500,
       afterSma: 2000,
       afterLaplace: 2500,
-      beforeFusion: 6000,
+      beforeFusion: 12_000,
       betweenMonitors: 1000,
     };
   }

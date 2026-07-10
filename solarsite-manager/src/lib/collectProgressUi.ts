@@ -18,8 +18,8 @@ export function countFusionClientBatches(rangeStart: string, rangeEnd: string): 
     return eachMaxDaySliceInRange(rangeStart, rangeEnd, 1).length;
   }
   if (isVercelHostedClient()) {
-    const daySlices = eachMaxDaySliceInRange(rangeStart, rangeEnd, 1).length;
-    return FUSION_SOLAR_STATIONS.length * daySlices;
+    const periodSlices = eachMaxDaySliceInRange(rangeStart, rangeEnd, getFusionStationChunkDays()).length;
+    return FUSION_SOLAR_STATIONS.length * Math.max(1, periodSlices);
   }
   const batchSize = getFusionFullRangeBatchSize();
   return Math.ceil(FUSION_SOLAR_STATIONS.length / batchSize);
@@ -37,10 +37,10 @@ export function estimateProdFullCollectMinutes(
 ): { min: number; max: number } {
   const fusionBatches = countFusionClientBatches(rangeStart, rangeEnd);
   const vercelFusion = isVercelHostedClient() && !shouldUseFusionDayWindowClient();
-  const nonFusionMin = vercelFusion ? 12 : 12;
-  const nonFusionMax = vercelFusion ? 22 : 25;
-  const perFusionBatchMin = shouldUseFusionDayWindowClient() ? 2 : isVercelHostedClient() ? 1.5 : 8;
-  const perFusionBatchMax = shouldUseFusionDayWindowClient() ? 4 : isVercelHostedClient() ? 3 : 18;
+  const nonFusionMin = vercelFusion ? 10 : 12;
+  const nonFusionMax = vercelFusion ? 20 : 25;
+  const perFusionBatchMin = shouldUseFusionDayWindowClient() ? 2 : isVercelHostedClient() ? 4 : 8;
+  const perFusionBatchMax = shouldUseFusionDayWindowClient() ? 4 : isVercelHostedClient() ? 8 : 18;
   return {
     min: Math.round(nonFusionMin + fusionBatches * perFusionBatchMin),
     max: Math.round(nonFusionMax + fusionBatches * perFusionBatchMax),
@@ -54,7 +54,7 @@ export function formatProdCollectTimeHint(rangeStart: string, rangeEnd: string):
   const fusionOnly = formatFusionOnlyTimeHint(rangeStart, rangeEnd);
   const fusionUnit = shouldUseFusionDayWindowClient()
     ? `${fusionBatches} 日分`
-    : `${fusionBatches} リクエスト（1発電所×1日）`;
+    : `${fusionBatches} リクエスト（1発電所×期間・日別取得）`;
   const allHint = `全データ一括（本番）: おおよそ ${min}〜${max} 分（FusionSolar は ${fusionUnit}）。`;
   return fusionOnly ? `${allHint}\n${fusionOnly}` : allHint;
 }
@@ -72,7 +72,7 @@ export function formatFusionOnlyTimeHint(rangeStart: string, rangeEnd: string): 
   const chunks = countFusionClientBatches(rangeStart, rangeEnd);
   const min = Math.max(20, Math.round(chunks * 3));
   const max = Math.max(min + 10, Math.round(chunks * 6));
-  return `FusionSolar 個別取得（本番）: ${chunks} リクエスト（1発電所×1日）でおおよそ ${min}〜${max} 分。1件あたり1〜3分です。タブを閉じないでください。`;
+  return `FusionSolar 個別取得（本番）: ${chunks} リクエスト（1発電所×期間）でおおよそ ${min}〜${max} 分。タブを閉じないでください。`;
 }
 
 export function fusionChunkStallWarning(

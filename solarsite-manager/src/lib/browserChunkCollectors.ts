@@ -68,6 +68,8 @@ function looksLikeTransientFailureMessage(message: string): boolean {
     m.includes("err_insufficient_resources") ||
     m.includes("insufficient_resources") ||
     m.includes("detached frame") ||
+    m.includes("不完全") ||
+    m.includes("保存が不足") ||
     /ログインid入力欄が見つかりません/i.test(message) ||
     /サーバ[ーー]?エラー/.test(message)
   );
@@ -137,10 +139,14 @@ export async function fetchCollectPostJsonWithRetries(params: {
       }
       const extra =
         looksLikeTransientFailureMessage(msg) &&
-        (msg.toLowerCase().includes("browser") || msg.toLowerCase().includes("context"))
-          ? 2500
+        (msg.toLowerCase().includes("browser") ||
+          msg.toLowerCase().includes("context") ||
+          msg.toLowerCase().includes("insufficient") ||
+          msg.includes("不完全") ||
+          msg.includes("保存が不足"))
+          ? 8000
           : 0;
-      await sleep(1500 * attempt + extra, params.signal);
+      await sleep(2500 * attempt + extra, params.signal);
     } catch (e) {
       if (isAbortError(e)) throw e;
       if (attempt >= maxAttempts) throw e;
@@ -251,13 +257,14 @@ export async function runFusionSolarDayWindowChunks(params: {
     };
   }
 
-  // localhost: 期間一括（8→失敗時4+4）。Vercel: 1発電所×1日（メモリ最小）
+  // localhost: 期間一括（8→失敗時4+4）。Vercel: 1発電所×全期間（Chromium起動を8回に抑える）
   if (!params.splitByStation) {
     if (isVercelHostedClient()) {
-      return await runFusionStationPerDayOnVercel({
+      return await runFusionStationRangeBatches({
         rangeStart: params.rangeStart,
         rangeEnd: params.rangeEnd,
         stationPostUrl: params.stationPostUrl,
+        windowPostUrl: params.windowPostUrl,
         signal: params.signal,
         resolveApiMessage: params.resolveApiMessage,
         onSetInterrupted: params.onSetInterrupted,
