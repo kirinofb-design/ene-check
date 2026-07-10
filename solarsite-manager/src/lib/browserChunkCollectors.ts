@@ -70,6 +70,8 @@ function looksLikeTransientFailureMessage(message: string): boolean {
     m.includes("detached frame") ||
     m.includes("不完全") ||
     m.includes("保存が不足") ||
+    m.includes("入力欄の特定に失敗") ||
+    m.includes("ログインid/パスワード") ||
     /ログインid入力欄が見つかりません/i.test(message) ||
     /サーバ[ーー]?エラー/.test(message)
   );
@@ -615,11 +617,9 @@ async function runFusionStationRangeBatches(params: {
 
     // browser closed / 資源不足は分割せず、待機して同一チャンクを再試行（起動回数を増やさない）
     if (looksLikeTransientFailureMessage(first.msg)) {
-      await prewarmFusionChunkChromium(params.signal);
-      await new Promise((r) => setTimeout(r, 12_000));
+      await new Promise((r) => setTimeout(r, 15_000));
       const retry = await runStationSliceOnce(station, sl);
       if (retry.ok) return retry;
-      // 再試行も資源系なら日次分割に落とすとさらに悪化するため、ここで打ち切る
       if (looksLikeTransientFailureMessage(retry.msg)) return retry;
     }
 
@@ -628,33 +628,9 @@ async function runFusionStationRangeBatches(params: {
       return await runStationDailyWindowFallback(station, sl);
     }
 
-    // カバレッジ不足など: 3日単位の station API に分割（7日分割より軽い）
-    let splitRec = 0;
-    let splitErr = 0;
-    const splitFailures: string[] = [];
-    const subSlices = eachMaxDaySliceInRange(sl.startDate, sl.endDate, 3);
-    for (let i = 0; i < subSlices.length; i++) {
-      if (params.signal.aborted) break;
-      if (i > 0) {
-        await prewarmFusionChunkChromium(params.signal);
-        await new Promise((r) => setTimeout(r, 8000));
-      }
-      const part = await runStationSliceOnce(station, subSlices[i]!);
-      splitRec += part.rec;
-      splitErr += part.err;
-      if (!part.ok) splitFailures.push(`${part.label}: ${part.msg}`);
-    }
-    const minRec = computeFusionExpectedMinRecords(sl.startDate, sl.endDate, 1);
-    const ok = splitFailures.length === 0 && splitRec >= minRec;
-    return {
-      ok,
-      msg: ok
-        ? `${station.name} ${dateSliceLabel(sl)}: 3日分割で回復`
-        : splitFailures.join("\n"),
-      rec: splitRec,
-      err: splitErr,
-      label: `${station.name} ${dateSliceLabel(sl)}`,
-    };
+    // カバレッジ不足など: 再試行のみ（追加分割は起動増で悪化しやすい）
+    await new Promise((r) => setTimeout(r, 10_000));
+    return await runStationSliceOnce(station, sl);
   };
 
   type FailedStationSlice = { station: (typeof FUSION_SOLAR_STATIONS)[number]; sl: DateSlice };
@@ -667,7 +643,7 @@ async function runFusionStationRangeBatches(params: {
   ): Promise<SliceCollectOutcome> => {
     if (bumpProgress) {
       if (chunkIdx > 0 && chunkDelayMs > 0) {
-        await prewarmFusionChunkChromium(params.signal);
+        // チャンクごとの prewarm は Chromium 起動を増やして資源枯渇しやすいため、待機のみにする
         await new Promise((r) => setTimeout(r, chunkDelayMs));
       }
       chunkIdx++;

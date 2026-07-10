@@ -73,14 +73,14 @@ export function getFusionVercelShortRangeMaxDays(): number {
   return 14;
 }
 
-/** 1発電所あたりの期間チャンク日数（本番は7日。9日一括は失敗後の7日分割で起動回数が増えるため最初から7日） */
+/** 1発電所あたりの期間チャンク日数（本番は14日。月次取得なら1リクエストで収まる） */
 export function getFusionStationChunkDays(): number {
-  return isVercelHostedClient() ? 7 : 31;
+  return isVercelHostedClient() ? 14 : 31;
 }
 
-/** 本番: 発電所チャンク間の待機（ms）。/tmp とメモリ回復のため長めに空ける */
+/** 本番: 発電所チャンク間の待機（ms）。/tmp 回復のため空ける（prewarmは初回のみ） */
 export function getFusionStationChunkDelayMs(): number {
-  return isVercelHostedClient() ? 15_000 : 0;
+  return isVercelHostedClient() ? 12_000 : 0;
 }
 
 /** Fusion 4+4 バッチ間の待機（ms） */

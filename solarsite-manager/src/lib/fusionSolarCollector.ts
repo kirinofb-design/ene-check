@@ -584,9 +584,9 @@ async function collectFusionDailyRowsForMissingDates(params: {
   return extraRows;
 }
 
-/** Vercel 本番: 月別表のページ欠けを避け、日別で1日ずつ取得（4+4 バッチでも同様） */
-function shouldUseDailyOnlyFusionCollection(_stationCount: number, daysInRange: number): boolean {
-  return isVercelRuntime() && daysInRange >= 1 && daysInRange <= 14;
+/** Vercel 本番: 月別表を優先（日別onlyは page.goto 回数が増え資源枯渇しやすい） */
+function shouldUseDailyOnlyFusionCollection(_stationCount: number, _daysInRange: number): boolean {
+  return false;
 }
 
 async function scrapeFusionSingleDayRow(
@@ -661,16 +661,20 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
     'button:has-text("Login")',
     'button[type="submit"]',
   ];
+  // ホーム直遷移だと入力欄が出ないことがあるため、ログインURLを優先する
+  const loginUrls = [`${BASE_URL}/unisso/login.action`, `${BASE_URL}/`, BASE_URL];
 
   const hardTimeoutMs = FUSION_SOLAR_LOGIN_FORM_HARD_TIMEOUT_MS;
   let idFilled = false;
   let pwFilled = false;
-  for (let navAttempt = 1; navAttempt <= 2; navAttempt++) {
+  for (let navAttempt = 1; navAttempt <= 3; navAttempt++) {
+    const loginUrl = loginUrls[(navAttempt - 1) % loginUrls.length]!;
     logger.info("fusionSolarCollector: navigating to login", {
-      extra: { url: BASE_URL, navAttempt },
+      extra: { url: loginUrl, navAttempt },
       userId,
     });
-    await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+    await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
+    await page.waitForTimeout(1000);
 
     const start = Date.now();
     idFilled = false;
@@ -688,6 +692,8 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
           if (await loc.count()) {
             const visible = await loc.isVisible().catch(() => false);
             if (visible) {
+              await loc.click({ timeout: 5_000 }).catch(() => {});
+              await loc.fill("");
               await loc.fill(loginId);
               idFilled = true;
               break;
@@ -702,6 +708,8 @@ async function loginFusionSolar(page: Page, loginId: string, password: string, u
           if (await loc.count()) {
             const visible = await loc.isVisible().catch(() => false);
             if (visible) {
+              await loc.click({ timeout: 5_000 }).catch(() => {});
+              await loc.fill("");
               await loc.fill(password);
               pwFilled = true;
               break;

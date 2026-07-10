@@ -12,6 +12,7 @@ import {
   getOrchestrationChillMs,
   getSmaChunkDelayMs,
   getSmaDaysPerChunk,
+  isVercelHostedClient,
   shouldPrewarmBetweenCollectorsClient,
   shouldRunFusionFirstOnVercelClient,
   shouldSplitFusionByStationClient,
@@ -19,6 +20,7 @@ import {
 
 const FUSION_SOLAR_STATION_POST_URL = "/api/collect/fusion-solar/station";
 const FUSION_SOLAR_WINDOW_POST_URL = "/api/collect/fusion-solar/window";
+const FUSION_SOLAR_SESSION_POST_URL = "/api/collect/fusion-solar/session";
 const COLLECT_PREWARM_URL = "/api/collect/prewarm";
 
 function sleepClientOrchestration(ms: number, signal: AbortSignal): Promise<void> {
@@ -159,6 +161,44 @@ export async function runClientFullCollectOrchestration(params: {
   const fusionFirst = shouldRunFusionFirstOnVercelClient();
 
   const runFusionStep = async (notifyIndex: number) => {
+    notify(notifyIndex, "fusion-solar", "FusionSolar セッション準備中…");
+    // 本番: 先にセッションだけ確立し、各発電所チャンクでの再ログインを減らす
+    if (isVercelHostedClient()) {
+      try {
+        await chill(8_000);
+        await prewarmCollectChromium(signal);
+        const sessionOut = await fetchCollectPostJsonWithRetries({
+          url: FUSION_SOLAR_SESSION_POST_URL,
+          body: {},
+          signal,
+          maxAttempts: 2,
+        });
+        const sessionOk = Boolean(
+          sessionOut.res.ok &&
+            sessionOut.data &&
+            typeof sessionOut.data === "object" &&
+            (sessionOut.data as { ok?: boolean }).ok === true
+        );
+        if (!sessionOk) {
+          const msg =
+            sessionOut.data &&
+            typeof sessionOut.data === "object" &&
+            typeof (sessionOut.data as { message?: unknown }).message === "string"
+              ? (sessionOut.data as { message: string }).message
+              : "セッション準備に失敗";
+          loggerWarnFusionSession(msg);
+        } else {
+          await chill(5_000);
+        }
+      } catch (e) {
+        if (isAbortError(e)) {
+          interrupted = true;
+          return;
+        }
+        // セッション準備失敗でも station 取得は試す（キャッシュがあれば通る）
+      }
+    }
+
     notify(notifyIndex, "fusion-solar");
     const fus = await runFusionSolarDayWindowChunks({
       rangeStart: range.startDate,
@@ -178,6 +218,11 @@ export async function runClientFullCollectOrchestration(params: {
     steps.push(fus.step);
     if (fus.flowAborted) interrupted = true;
   };
+
+  function loggerWarnFusionSession(msg: string) {
+    // ブラウザ側のため console のみ（サーバ logger は使えない）
+    console.warn("[collect] FusionSolar session warm failed:", msg);
+  }
 
   if (signal.aborted) interrupted = true;
 
