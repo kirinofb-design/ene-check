@@ -613,19 +613,32 @@ async function runFusionStationRangeBatches(params: {
     const first = await runStationSliceOnce(station, sl);
     if (first.ok) return first;
 
+    // browser closed / 資源不足は分割せず、待機して同一チャンクを再試行（起動回数を増やさない）
+    if (looksLikeTransientFailureMessage(first.msg)) {
+      await prewarmFusionChunkChromium(params.signal);
+      await new Promise((r) => setTimeout(r, 12_000));
+      const retry = await runStationSliceOnce(station, sl);
+      if (retry.ok) return retry;
+      // 再試行も資源系なら日次分割に落とすとさらに悪化するため、ここで打ち切る
+      if (looksLikeTransientFailureMessage(retry.msg)) return retry;
+    }
+
     const days = diffDaysInclusiveYmd(sl.startDate, sl.endDate);
     if (days <= 3) {
       return await runStationDailyWindowFallback(station, sl);
     }
 
-    // 14日等: 日次window×全日は20分超で中断されるため、7日単位の station API に分割
+    // カバレッジ不足など: 3日単位の station API に分割（7日分割より軽い）
     let splitRec = 0;
     let splitErr = 0;
     const splitFailures: string[] = [];
-    const subSlices = eachMaxDaySliceInRange(sl.startDate, sl.endDate, 7);
+    const subSlices = eachMaxDaySliceInRange(sl.startDate, sl.endDate, 3);
     for (let i = 0; i < subSlices.length; i++) {
       if (params.signal.aborted) break;
-      if (i > 0) await new Promise((r) => setTimeout(r, 500));
+      if (i > 0) {
+        await prewarmFusionChunkChromium(params.signal);
+        await new Promise((r) => setTimeout(r, 8000));
+      }
       const part = await runStationSliceOnce(station, subSlices[i]!);
       splitRec += part.rec;
       splitErr += part.err;
@@ -636,7 +649,7 @@ async function runFusionStationRangeBatches(params: {
     return {
       ok,
       msg: ok
-        ? `${station.name} ${dateSliceLabel(sl)}: 7日分割で回復`
+        ? `${station.name} ${dateSliceLabel(sl)}: 3日分割で回復`
         : splitFailures.join("\n"),
       rec: splitRec,
       err: splitErr,

@@ -1017,22 +1017,17 @@ export async function runFusionSolarCollector(
     return FUSION_SOLAR_DEFAULT_WALL_BUDGET_MS;
   })();
 
-  const launchFusionBrowser = async (stableMode = false) =>
+  // --single-process は Vercel 上で Chromium 即死（browser closed）の原因になりやすいため使わない。
+  // Solar Monitor 成功時と同じ安定引数に揃える。
+  const launchFusionBrowser = async (_stableMode = false) =>
     launchChromiumForRuntime({
       headless: true,
-      extraArgs:
-        stableMode || isVercelRuntime()
-          ? [
-              "--no-sandbox",
-              "--disable-dev-shm-usage",
-              "--disable-gpu",
-              "--single-process",
-              "--disable-blink-features=AutomationControlled",
-            ]
-          : ["--disable-blink-features=AutomationControlled"],
+      extraArgs: isVercelRuntime()
+        ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+        : ["--disable-blink-features=AutomationControlled"],
     });
 
-  let browser = await launchFusionBrowser(isVercelRuntime());
+  let browser = await launchFusionBrowser();
 
   let recordCount = 0;
   let errorCount = 0;
@@ -1179,7 +1174,22 @@ export async function runFusionSolarCollector(
             await refreshStorageStateFromContext();
             return;
           }
-        } catch {
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (looksLikeFusionTransientBrowserError(msg)) {
+            logger.warn("fusionSolarCollector: login home goto failed, relaunch browser", {
+              userId,
+              extra: { homeUrl, error: msg },
+            });
+            await context.close().catch(() => {});
+            await browser.close().catch(() => {});
+            await new Promise((r) => setTimeout(r, isVercelRuntime() ? 3000 : 800));
+            browser = await launchFusionBrowser(true);
+            const recovered = await createContextPage(Boolean(storageStateJson) && !forceRefresh);
+            context = recovered.context;
+            page = recovered.page;
+            continue;
+          }
           // try next
         }
       }
@@ -1212,6 +1222,12 @@ export async function runFusionSolarCollector(
         extra: { reason, preferStorageState },
       });
       await context.close().catch(() => {});
+      // browser closed 系は context 再作成だけでは足りないため、ブラウザごと再起動する
+      if (looksLikeFusionTransientBrowserError(reason) || /closed|insufficient/i.test(reason)) {
+        await browser.close().catch(() => {});
+        await new Promise((r) => setTimeout(r, isVercelRuntime() ? 3000 : 800));
+        browser = await launchFusionBrowser(true);
+      }
       const useState = preferStorageState && Boolean(storageStateJson);
       const recreatedCp = await createContextPage(useState);
       context = recreatedCp.context;
@@ -1219,6 +1235,8 @@ export async function runFusionSolarCollector(
       if (!useState) {
         await loginFusionSolar(page, loginId, password, userId);
         await refreshStorageStateFromContext();
+      } else {
+        await ensureFusionLoggedIn();
       }
     };
 
@@ -1282,14 +1300,32 @@ export async function runFusionSolarCollector(
           extra: { station: station.name, ne: station.ne, days: rangeYmds.length },
         });
 
-        await ensureFusionSessionAndReportReady(
-          page,
-          stationReportUrl,
-          loginId,
-          password,
-          userId,
-          station.name
-        );
+        try {
+          await ensureFusionSessionAndReportReady(
+            page,
+            stationReportUrl,
+            loginId,
+            password,
+            userId,
+            station.name
+          );
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!looksLikeFusionTransientBrowserError(msg)) throw e;
+          logger.warn("fusionSolarCollector: daily-only session ready failed, relaunch browser", {
+            userId,
+            extra: { station: station.name, error: msg },
+          });
+          await recreateSessionPage(`daily-only session: ${msg}`, true);
+          await ensureFusionSessionAndReportReady(
+            page,
+            stationReportUrl,
+            loginId,
+            password,
+            userId,
+            station.name
+          );
+        }
         await page.waitForSelector(".ant-picker-input input", { timeout: REPORT_PAGE_READY_TIMEOUT_MS });
         await page.waitForTimeout(800);
         await switchFusionReportGranularity(page, "daily");

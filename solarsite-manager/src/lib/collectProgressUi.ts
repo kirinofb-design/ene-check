@@ -54,7 +54,7 @@ export function formatProdCollectTimeHint(rangeStart: string, rangeEnd: string):
   const fusionOnly = formatFusionOnlyTimeHint(rangeStart, rangeEnd);
   const fusionUnit = shouldUseFusionDayWindowClient()
     ? `${fusionBatches} 日分`
-    : `${fusionBatches} リクエスト（1発電所×期間・日別取得）`;
+    : `${fusionBatches} リクエスト（1発電所×${getFusionStationChunkDays()}日）`;
   const allHint = `全データ一括（本番）: おおよそ ${min}〜${max} 分（FusionSolar は ${fusionUnit}）。`;
   return fusionOnly ? `${allHint}\n${fusionOnly}` : allHint;
 }
@@ -72,7 +72,7 @@ export function formatFusionOnlyTimeHint(rangeStart: string, rangeEnd: string): 
   const chunks = countFusionClientBatches(rangeStart, rangeEnd);
   const min = Math.max(20, Math.round(chunks * 3));
   const max = Math.max(min + 10, Math.round(chunks * 6));
-  return `FusionSolar 個別取得（本番）: ${chunks} リクエスト（1発電所×期間）でおおよそ ${min}〜${max} 分。タブを閉じないでください。`;
+  return `FusionSolar 個別取得（本番）: ${chunks} リクエスト（1発電所×${getFusionStationChunkDays()}日）でおおよそ ${min}〜${max} 分。タブを閉じないでください。`;
 }
 
 export function fusionChunkStallWarning(
