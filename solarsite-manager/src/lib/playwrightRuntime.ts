@@ -27,6 +27,19 @@ function mergeChromiumArgs(base: string[] | undefined, extra: string[] | undefin
   return out;
 }
 
+/**
+ * @sparticuz/chromium の既定 args に含まれる `--single-process` は、
+ * Vercel 上で launch 直後〜newContext 時にプロセス即死
+ * (`Target page, context or browser has been closed`) の主因になりやすい。
+ */
+function sanitizeChromiumArgsForVercel(args: string[]): string[] {
+  return args.filter((arg) => {
+    const a = arg.trim().toLowerCase();
+    if (a === "--single-process") return false;
+    return true;
+  });
+}
+
 type LaunchOpts = {
   headless?: boolean;
   slowMoMs?: number;
@@ -109,6 +122,18 @@ async function resolveSparticuzExecutablePath(): Promise<string> {
   return await chromium.executablePath();
 }
 
+function looksLikeRetryableChromiumLaunchError(message: string): boolean {
+  const s = message.toLowerCase();
+  return (
+    s.includes("etxtbsy") ||
+    s.includes("text file busy") ||
+    s.includes("target page, context or browser has been closed") ||
+    s.includes("browser has been closed") ||
+    s.includes("disconnected immediately") ||
+    s.includes("err_insufficient_resources")
+  );
+}
+
 async function launchWithRetries(
   launchOnce: () => Promise<Browser>,
   attempts = 5
@@ -116,13 +141,26 @@ async function launchWithRetries(
   let lastErr: unknown = null;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await launchOnce();
+      const browser = await launchOnce();
+      // launch 成功しても直後に落ちることがあるため接続と newContext を確認する
+      await sleep(150 + i * 100);
+      if (!browser.isConnected()) {
+        await browser.close().catch(() => {});
+        throw new Error("Chromium disconnected immediately after launch");
+      }
+      try {
+        const probe = await browser.newContext();
+        await probe.close().catch(() => {});
+      } catch (probeErr) {
+        await browser.close().catch(() => {});
+        throw probeErr;
+      }
+      return browser;
     } catch (e) {
       lastErr = e;
       const msg = e instanceof Error ? e.message : String(e);
-      const retryable = msg.includes("ETXTBSY") || msg.includes("Text file busy");
-      if (!retryable || i === attempts - 1) break;
-      await sleep(100 * (i + 1) + Math.floor(Math.random() * 75));
+      if (!looksLikeRetryableChromiumLaunchError(msg) || i === attempts - 1) break;
+      await sleep(200 * (i + 1) + Math.floor(Math.random() * 120));
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -155,7 +193,15 @@ export async function launchChromiumForRuntime(opts: LaunchOpts = {}): Promise<B
         const executablePath = await resolveSparticuzExecutablePath();
         const chromiumMod = await import("@sparticuz/chromium");
         const chromium = chromiumMod.default ?? chromiumMod;
-        const args = mergeChromiumArgs(chromium.args, opts.extraArgs);
+        const args = sanitizeChromiumArgsForVercel(
+          mergeChromiumArgs(chromium.args, [
+            ...(opts.extraArgs ?? []),
+            // メモリ節約・安定化（single-process は sanitize で除去済み）
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--mute-audio",
+          ])
+        );
         return await launchWithRetries(() =>
           pw.chromium.launch({
             executablePath,

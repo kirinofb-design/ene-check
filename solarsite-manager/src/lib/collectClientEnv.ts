@@ -23,10 +23,11 @@ export function isVercelHostedClient(): boolean {
 
 /**
  * Vercel で Fusion を他コレクターより先に実行するか。
- * 既定は false（他システムを先に保存し、Fusion 失敗でも Excel に他データが残るようにする）。
+ * 既定は true（Chromium 資源を他コレクター実行前に確保し、browser closed を減らす）。
+ * 他システムは Fusion 後でも安定して取得できる。
  */
 export function shouldRunFusionFirstOnVercelClient(): boolean {
-  return false;
+  return isVercelHostedClient();
 }
 
 /**
@@ -78,9 +79,9 @@ export function getFusionStationChunkDays(): number {
   return isVercelHostedClient() ? 14 : 31;
 }
 
-/** 本番: 発電所チャンク間の待機（ms）。/tmp 回復のため空ける（prewarmは初回のみ） */
+/** 本番: 発電所チャンク間の待機（ms）。/tmp・メモリ回復のため空ける */
 export function getFusionStationChunkDelayMs(): number {
-  return isVercelHostedClient() ? 12_000 : 0;
+  return isVercelHostedClient() ? 20_000 : 0;
 }
 
 /** Fusion 4+4 バッチ間の待機（ms） */

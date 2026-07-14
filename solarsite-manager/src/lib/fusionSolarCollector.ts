@@ -86,10 +86,24 @@ function looksLikeFusionTransientBrowserError(message: string): boolean {
   return (
     s.includes("target page, context or browser has been closed") ||
     s.includes("browsercontext.newpage") ||
+    s.includes("browser.newcontext") ||
     s.includes("net::err_insufficient_resources") ||
     s.includes("execution context was destroyed") ||
     s.includes("browser has been closed")
   );
+}
+
+/** 画像・フォント等を遮断して Vercel 上の Chromium メモリを抑える */
+async function applyFusionResourceBlocking(context: BrowserContext): Promise<void> {
+  await context
+    .route("**/*", (route) => {
+      const type = route.request().resourceType();
+      if (type === "image" || type === "media" || type === "font") {
+        return route.abort();
+      }
+      return route.continue();
+    })
+    .catch(() => {});
 }
 
 /** PCS 列のセル文字列が数値 kWh として解釈できるか（空・ダッシュ類は false） */
@@ -1127,6 +1141,9 @@ export async function runFusionSolarCollector(
         const useState = preferStorageState && Boolean(storageStateJson);
         try {
           const nextContext = await newContext(useState);
+          if (isVercelRuntime()) {
+            await applyFusionResourceBlocking(nextContext);
+          }
           const nextPage = await nextContext.newPage();
           nextPage.setDefaultTimeout(60_000);
           await nextContext

@@ -151,39 +151,17 @@ export async function warmFusionSolarSession(
   await ensureMonitoringSessionCacheTable();
   const existing = await loadMonitoringSession(userId, "fusion-solar");
   if (existing) {
-    // 既存セッションの簡易検証
-    let browser = await launchChromiumForRuntime({
-      headless: true,
-      extraArgs: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-    });
+    // Vercel では検証用 Chromium 起動が直後の station 収集の資源を食うため、
+    // キャッシュが JSON として妥当なら再利用する（失効時は collector 側で再ログイン）。
     try {
-      const context = await browser.newContext({
-        storageState: JSON.parse(existing),
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        locale: "ja-JP",
-      });
-      const page = await context.newPage();
-      page.setDefaultTimeout(45_000);
-      for (const homeUrl of HOME_URL_CANDIDATES) {
-        await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 25_000 }).catch(() => {});
-        await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-        if (await pageLooksFusionLoggedIn(page)) {
-          const state = await context.storageState();
-          await saveMonitoringSession(userId, "fusion-solar", JSON.stringify(state));
-          return { ok: true, message: "FusionSolar セッションを再利用しました。", reused: true };
-        }
-      }
+      JSON.parse(existing);
+      return {
+        ok: true,
+        message: "FusionSolar セッションを再利用しました（検証スキップ）。",
+        reused: true,
+      };
+    } catch {
       await clearMonitoringSession(userId, "fusion-solar");
-    } catch (e) {
-      logger.warn("warmFusionSolarSession: cached session invalid", {
-        userId,
-        extra: { error: e instanceof Error ? e.message : String(e) },
-      });
-      await clearMonitoringSession(userId, "fusion-solar");
-    } finally {
-      await browser.close().catch(() => {});
-      if (isVercelRuntime()) await new Promise((r) => setTimeout(r, 2500));
     }
   }
 
@@ -209,6 +187,15 @@ export async function warmFusionSolarSession(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       locale: "ja-JP",
     });
+    if (isVercelRuntime()) {
+      await context
+        .route("**/*", (route) => {
+          const type = route.request().resourceType();
+          if (type === "image" || type === "media" || type === "font") return route.abort();
+          return route.continue();
+        })
+        .catch(() => {});
+    }
     const page = await context.newPage();
     page.setDefaultTimeout(60_000);
     await fillFusionLoginForm(page, cred.loginId, decryptSecret(cred.encryptedPassword));

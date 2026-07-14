@@ -165,7 +165,8 @@ export async function runClientFullCollectOrchestration(params: {
     // 本番: 先にセッションだけ確立し、各発電所チャンクでの再ログインを減らす
     if (isVercelHostedClient()) {
       try {
-        await chill(8_000);
+        // キャッシュがあれば Chromium を起動しない（検証スキップ）。冷起動時のみログイン起動。
+        await chill(3_000);
         await prewarmCollectChromium(signal);
         const sessionOut = await fetchCollectPostJsonWithRetries({
           url: FUSION_SOLAR_SESSION_POST_URL,
@@ -179,6 +180,11 @@ export async function runClientFullCollectOrchestration(params: {
             typeof sessionOut.data === "object" &&
             (sessionOut.data as { ok?: boolean }).ok === true
         );
+        const reused =
+          sessionOk &&
+          sessionOut.data &&
+          typeof sessionOut.data === "object" &&
+          (sessionOut.data as { reused?: boolean }).reused === true;
         if (!sessionOk) {
           const msg =
             sessionOut.data &&
@@ -187,8 +193,9 @@ export async function runClientFullCollectOrchestration(params: {
               ? (sessionOut.data as { message: string }).message
               : "セッション準備に失敗";
           loggerWarnFusionSession(msg);
-        } else {
-          await chill(5_000);
+        } else if (!reused) {
+          // ログイン用 Chromium を閉じた直後なので、少し空けてから station へ
+          await chill(8_000);
         }
       } catch (e) {
         if (isAbortError(e)) {
