@@ -570,6 +570,43 @@ async function trySwitchToDayView(page: any): Promise<void> {
   }
 }
 
+/** EnergyAndPower 到達直後は title が空のことがある。発電所判定前に少し待つ。 */
+async function waitForEnergyPageTitle(page: any, maxMs = 8_000): Promise<string> {
+  const started = Date.now();
+  while (Date.now() - started < maxMs) {
+    const title = String((await page.title().catch(() => "")) ?? "").trim();
+    if (title.length > 0 && !/^SMA Solar Technology AG/i.test(title)) {
+      return title;
+    }
+    await smaDelay(450, 280);
+  }
+  return String((await page.title().catch(() => "")) ?? "").trim();
+}
+
+/** 月次チャート描画待ち（大塚など2発電所目で空ページになるケース対策） */
+async function waitForSmaChartRows(page: any, maxMs = 12_000): Promise<number> {
+  const started = Date.now();
+  let best = 0;
+  while (Date.now() - started < maxMs) {
+    const counts = await Promise.all([
+      extractTableRows(page).then((r) => r.length).catch(() => 0),
+      extractRowsFromHighcharts(page).then((r) => r.length).catch(() => 0),
+      extractRowsFromImageMap(page).then((r) => r.length).catch(() => 0),
+    ]);
+    best = Math.max(best, ...counts);
+    if (best > 0) return best;
+    await smaDelay(700, 400);
+  }
+  return best;
+}
+
+async function prepareEnergyAndPowerMonthView(page: any): Promise<void> {
+  await dismissSunnyPortalConsentIfPresent(page);
+  await trySwitchToMonthView(page);
+  await tryOpenChartGear(page).catch(() => false);
+  await waitForSmaChartRows(page);
+}
+
 async function trySwitchToMonthView(page: any): Promise<boolean> {
   const consentDismissed = await dismissSunnyPortalConsentIfPresent(page);
   if (consentDismissed) {
@@ -1704,16 +1741,15 @@ export async function runSmaCollectorCookie(
         });
       }
       await saveTraceSnapshot(page, userId, `energy_page_${plantOid}`);
-      await trySwitchToMonthView(page);
-      await saveTraceSnapshot(page, userId, `energy_month_try_${plantOid}`);
 
       const url = page.url();
-      const title = await page.title().catch(() => "");
+      // タイトルが空の瞬間があるため、発電所判定前に待つ（空タイトルで誤って再遷移しない）
+      let title = await waitForEnergyPageTitle(page);
       const isEnergyUrl = /\/FixedPages\/EnergyAndPower\.aspx/i.test(url);
       const isEnergyTitle = title.includes("出力と発電量") || title.includes("Energy");
       // タイトル取得が空文字になる瞬間があるため、URL判定を優先してページ到達扱いにする
       const isEnergyPage = isEnergyUrl || isEnergyTitle;
-      const isExpectedPlant = titleLooksForPlant(title, plantName);
+      let isExpectedPlant = titleLooksForPlant(title, plantName);
       logger.info("smaCollector: EnergyAndPower result", {
         userId,
         extra: {
@@ -1744,8 +1780,10 @@ export async function runSmaCollectorCookie(
         await smaDelay(1800, 550);
         await page.goto("https://www.sunnyportal.com/FixedPages/EnergyAndPower.aspx", { waitUntil: "domcontentloaded" });
         await smaDelay(2500, 900);
-        const retryTitle = await page.title().catch(() => "");
+        const retryTitle = await waitForEnergyPageTitle(page);
         const retryOk = titleLooksForPlant(retryTitle, plantName);
+        title = retryTitle;
+        isExpectedPlant = retryOk;
         logger.info("smaCollector: plant identity retry", {
           userId,
           extra: { plantName, plantOid, retryTitle, retryOk, retryUrl: page.url() },
@@ -1759,6 +1797,10 @@ export async function runSmaCollectorCookie(
           continue;
         }
       }
+
+      // 発電所確定後に月次切替＋チャート描画待ち（再遷移後に月次を忘れると大塚が0件になる）
+      await prepareEnergyAndPowerMonthView(page);
+      await saveTraceSnapshot(page, userId, `energy_month_try_${plantOid}`);
 
       const site = await prisma.site.findFirst({
         where: { siteName: station.siteName },
@@ -1827,7 +1869,18 @@ export async function runSmaCollectorCookie(
 
       // 一部日だけ欠ける（例: 月次チャートの最終日）場合も CSV で補完する
       if (bestInRange < expectedDaysInRange) {
-        const csvRows = await tryDownloadCsvRows(page, userId, plantOid);
+        let csvRows = await tryDownloadCsvRows(page, userId, plantOid);
+        // detached Frame 等で CSV が落ちた場合、EnergyAndPower を立て直して1回だけ再試行
+        if (csvRows.length === 0) {
+          await page
+            .goto("https://www.sunnyportal.com/FixedPages/EnergyAndPower.aspx", {
+              waitUntil: "domcontentloaded",
+            })
+            .catch(() => {});
+          await smaDelay(2000, 800);
+          await prepareEnergyAndPowerMonthView(page);
+          csvRows = await tryDownloadCsvRows(page, userId, plantOid);
+        }
         if (csvRows.length > 0) {
           noteSource("csv", csvRows);
           mergedRows = mergeSmaRowsByDate(sourceRows);
@@ -1861,6 +1914,28 @@ export async function runSmaCollectorCookie(
             },
           });
         }
+      }
+
+      // それでも0件なら、発電所再選択→月次準備→抽出を最後に1回だけやり直す（2発電所目の空描画対策）
+      if (bestInRange === 0) {
+        logger.warn("smaCollector: zero rows, hard reload EnergyAndPower once", {
+          userId,
+          extra: { plantName, plantOid },
+        });
+        const directRedirectUrl = `https://www.sunnyportal.com/RedirectToPlant/${plantOid}`;
+        await page.goto(directRedirectUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        await smaDelay(1800, 600);
+        await page
+          .goto("https://www.sunnyportal.com/FixedPages/EnergyAndPower.aspx", { waitUntil: "domcontentloaded" })
+          .catch(() => {});
+        await smaDelay(2500, 900);
+        await prepareEnergyAndPowerMonthView(page);
+        noteSource("hard_reload_table", await extractTableRows(page));
+        noteSource("hard_reload_highcharts", await extractRowsFromHighcharts(page));
+        noteSource("hard_reload_imagemap", await extractRowsFromImageMap(page));
+        noteSource("hard_reload_csv", await tryDownloadCsvRows(page, userId, plantOid));
+        mergedRows = mergeSmaRowsByDate(sourceRows);
+        bestInRange = countRowsInRange(mergedRows, start, end);
       }
 
       const missingYmds = listMissingSmaYmdsInRange(mergedRows, start, end);
